@@ -7,10 +7,21 @@ Studio de création de vidéos, pensé pour l'iPhone.
 - **Tableau de bord** : accueil, nombre de vidéos créées, projets en cours, dernières vidéos produites.
 - **Créer une vidéo** : crée un projet vidéo (titre) enregistré comme brouillon.
 - **Projets** : liste et suppression des projets.
+- **Générateur d'histoires** : histoires en français de 60 à 90 secondes (hook, 2 à 3 personnages,
+  narration, dialogues, 6 à 8 scènes, fin surprenante) dans 5 genres : horreur, mystère, surnaturel,
+  trahison, humour noir. Modification complète (titre, personnages, scènes, répliques), sauvegarde,
+  suppression et copie du script.
 - **Navigation** en bas de l'écran, style iPhone.
 
 Modules annoncés mais **pas encore disponibles** (marqués « À venir » dans l'appli) :
-bibliothèque de personnages, générateur d'histoires, étapes de production vidéo.
+bibliothèque de personnages, étapes de production vidéo.
+
+### Comment fonctionne le générateur
+
+Il n'utilise **aucune IA en ligne** (donc aucun coût). Il assemble, sur l'appareil, l'une des
+15 trames originales (3 par genre, dans `js/story-data.js`) avec des personnages tirés au hasard,
+en accordant le texte au masculin ou au féminin. La durée est estimée à 2,5 mots par seconde
+(débit moyen d'une voix off). Pour ajouter des histoires, il suffit d'ajouter des trames dans ce fichier.
 
 ## Technique
 

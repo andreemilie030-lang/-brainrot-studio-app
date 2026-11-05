@@ -43,7 +43,11 @@
     book: ['M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z', 'M5 17a3 3 0 0 1 3-3h11'],
     chevron: ['M9 6l6 6-6 6'],
     trash: ['M4 7h16', 'M10 11v6M14 11v6', 'M6 7l1 13h10l1-13', 'M9 7V4h6v3'],
-    back: ['M15 6l-6 6 6 6']
+    back: ['M15 6l-6 6 6 6'],
+    sparkle: ['M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z', 'M19 16l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z'],
+    pencil: ['M4 20h4L19 9l-4-4L4 16z', 'M13.5 6.5l4 4'],
+    save: ['M5 4h11l3 3v13H5z', 'M8 4v5h7V4', 'M8 20v-6h8v6'],
+    copy: ['M9 9h11v11H9z', 'M5 15H4V4h11v1']
   };
 
   function icon(name) {
@@ -127,14 +131,14 @@
     ]);
   }
 
-  function moduleCard(href, iconName, title, text) {
+  function moduleCard(href, iconName, title, text, badge) {
     return h('a', { class: 'card module-card', href: href }, [
       h('div', { class: 'module-icon' }, [icon(iconName)]),
       h('div', { class: 'module-body' }, [
         h('h3', { class: 'module-title', text: title }),
         h('p', { class: 'module-text', text: text })
       ]),
-      h('span', { class: 'badge badge-soon', text: 'À venir' })
+      badge ? h('span', { class: 'badge badge-ready', text: badge }) : h('span', { class: 'badge badge-soon', text: 'À venir' })
     ]);
   }
 
@@ -191,16 +195,18 @@
       sectionHeader('Outils du studio'),
       h('div', { class: 'list' }, [
         moduleCard('#/personnages', 'user', 'Bibliothèque de personnages', 'Crée et retrouve tes personnages.'),
-        moduleCard('#/histoires', 'book', 'Générateur d’histoires', 'Trouve des idées et écris tes scénarios.')
+        moduleCard('#/histoires', 'book', 'Générateur d’histoires',
+          Store.stories().length ? Store.stories().length + ' histoire' + (Store.stories().length > 1 ? 's sauvegardées' : ' sauvegardée') : 'Histoires de 60 à 90 s, prêtes à tourner.',
+          'Disponible')
       ])
     ]);
 
     return [storageWarning(), hero, stats, projSection, vidSection, modules];
   }
 
-  function pageHeader(title) {
+  function pageHeader(title, backHref) {
     return h('header', { class: 'page-head' }, [
-      h('a', { href: '#/accueil', class: 'back', 'aria-label': 'Retour à l’accueil' }, [icon('back')]),
+      h('a', { href: backHref || '#/accueil', class: 'back', 'aria-label': backHref ? 'Retour' : 'Retour à l’accueil' }, [icon('back')]),
       h('h1', { class: 'page-title', text: title })
     ]);
   }
@@ -232,6 +238,345 @@
     ];
   }
 
+
+  /* ---------- Générateur d'histoires ---------- */
+
+  var gen = { genre: null, draft: null, recent: [] };
+  var editor = { story: null, dirty: false, hash: '' };
+
+  function autoGrow(t) {
+    t.style.height = 'auto';
+    t.style.height = (t.scrollHeight + 2) + 'px';
+  }
+
+  function textarea(value, label, onInput, extraClass) {
+    var t = h('textarea', { class: 'textarea' + (extraClass ? ' ' + extraClass : ''), rows: '2', 'aria-label': label });
+    t.value = value || '';
+    t.addEventListener('input', function () { autoGrow(t); onInput(t.value); });
+    requestAnimationFrame(function () { autoGrow(t); });
+    return t;
+  }
+
+  function durationInfo(story) {
+    var sec = StoryGen.duration(story);
+    var state = sec < StoryGen.MIN_SECONDS ? 'short' : sec > StoryGen.MAX_SECONDS ? 'long' : 'ok';
+    var msg = state === 'ok' ? 'Dans la cible (60 à 90 s)'
+      : state === 'short' ? 'Trop court : vise au moins 60 s'
+      : 'Trop long : vise 90 s maximum';
+    return { sec: sec, state: state, msg: msg };
+  }
+
+  function durationBadge(story) {
+    var d = durationInfo(story);
+    return h('span', { class: 'badge badge-time is-' + d.state, text: '≈ ' + d.sec + ' s' });
+  }
+
+  function copyText(text) {
+    function fallback() {
+      var t = h('textarea', { class: 'sr-only', 'aria-hidden': 'true' });
+      t.value = text;
+      document.body.appendChild(t);
+      t.select();
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      t.remove();
+      toast(ok ? 'Texte copié' : 'Copie impossible sur cet appareil');
+    }
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(function () { toast('Texte copié'); }, fallback);
+    } else fallback();
+  }
+
+  function storyReader(story) {
+    return h('article', { class: 'card story' }, [
+      h('div', { class: 'story-meta' }, [
+        h('span', { class: 'badge badge-genre', text: StoryGen.genreLabel(story.genre) }),
+        durationBadge(story),
+        h('span', { class: 'story-count', text: story.scenes.length + ' scènes' })
+      ]),
+      h('h2', { class: 'story-title', text: story.title }),
+      h('ul', { class: 'cast' }, story.characters.map(function (c) {
+        return h('li', { class: 'cast-item' }, [
+          h('span', { class: 'cast-name', text: c.name }),
+          c.role ? h('span', { class: 'cast-role', text: c.role }) : null
+        ]);
+      })),
+      h('div', { class: 'story-block story-hook' }, [
+        h('p', { class: 'story-label', text: 'Hook · premières secondes' }),
+        h('p', { class: 'story-text', text: story.hook })
+      ]),
+      h('ol', { class: 'scenes' }, story.scenes.map(function (sc, i) {
+        return h('li', { class: 'scene' }, [
+          h('p', { class: 'story-label', text: 'Scène ' + (i + 1) }),
+          sc.narration ? h('p', { class: 'story-text', text: sc.narration }) : null,
+          sc.dialogues.length ? h('div', { class: 'lines' }, sc.dialogues.map(function (d) {
+            return h('p', { class: 'line' }, [
+              h('span', { class: 'line-who', text: StoryGen.nameOf(story, d.speaker) }),
+              h('span', { class: 'line-text', text: '« ' + d.text + ' »' })
+            ]);
+          })) : null
+        ]);
+      })),
+      h('div', { class: 'story-block story-ending' }, [
+        h('p', { class: 'story-label', text: 'Fin' }),
+        h('p', { class: 'story-text', text: story.ending })
+      ])
+    ]);
+  }
+
+  function generateDraft() {
+    gen.draft = StoryGen.generate(gen.genre, gen.recent);
+    gen.recent.push(gen.draft.templateId);
+    if (gen.recent.length > 6) gen.recent.shift();
+  }
+
+  function viewStories() {
+    var chips = [{ id: null, label: 'Au hasard' }].concat(StoryGen.GENRES).map(function (g) {
+      var active = gen.genre === g.id;
+      return h('button', {
+        type: 'button', class: 'chip' + (active ? ' is-active' : ''), 'aria-pressed': active ? 'true' : 'false',
+        onclick: function () { gen.genre = g.id; render(); }
+      }, [g.label]);
+    });
+
+    var genCard = h('section', { class: 'card generator' }, [
+      h('h2', { class: 'generator-title', text: 'Générer une histoire' }),
+      h('p', { class: 'generator-text', text: 'Une histoire courte de 60 à 90 secondes : un hook, 2 à 3 personnages, des dialogues, 6 à 8 scènes et une fin surprenante.' }),
+      h('div', { class: 'chips', role: 'group', 'aria-label': 'Genre' }, chips),
+      h('button', {
+        type: 'button', class: 'btn btn-primary btn-block', id: 'btn-generate',
+        onclick: function () { generateDraft(); render(); scrollToId('draft'); }
+      }, [icon('sparkle'), h('span', { text: gen.draft ? 'Générer une autre histoire' : 'Générer une histoire' })]),
+      h('p', { class: 'generator-note', text: 'Fonctionne sans connexion et gratuitement : l’histoire est assemblée sur ton iPhone à partir de ' +
+        StoryGen.templateCount(gen.genre) + ' trames originales' + (gen.genre ? ' de ce genre' : '') + ', avec des personnages tirés au hasard.' })
+    ]);
+
+    var draftSection = null;
+    if (gen.draft) {
+      draftSection = h('section', { class: 'section', id: 'draft' }, [
+        sectionHeader('Nouvelle histoire'),
+        storyReader(gen.draft),
+        h('div', { class: 'actions-row' }, [
+          h('button', { type: 'button', class: 'btn btn-ghost', onclick: function () {
+            editor.story = JSON.parse(JSON.stringify(gen.draft));
+            editor.dirty = true;
+            editor.hash = '#/histoire/brouillon';
+            location.hash = editor.hash;
+          } }, [icon('pencil'), h('span', { text: 'Modifier' })]),
+          h('button', { type: 'button', class: 'btn btn-primary', id: 'btn-save-draft', onclick: function () {
+            var res = Store.saveStory(gen.draft);
+            gen.draft = null;
+            toast(res.saved ? 'Histoire sauvegardée' : 'Sauvegarde impossible : stockage bloqué');
+            render();
+          } }, [icon('save'), h('span', { text: 'Sauvegarder' })])
+        ])
+      ]);
+    }
+
+    var stories = Store.stories();
+    var list = h('section', { class: 'section' }, [
+      sectionHeader('Mes histoires' + (stories.length ? ' (' + stories.length + ')' : '')),
+      stories.length
+        ? h('div', { class: 'list' }, stories.map(function (st) {
+            return h('a', { class: 'card story-card', href: '#/histoire/' + encodeURIComponent(st.id) }, [
+              h('div', { class: 'module-icon' }, [icon('book')]),
+              h('div', { class: 'project-info' }, [
+                h('h3', { class: 'project-title', text: st.title }),
+                h('p', { class: 'project-meta' }, [
+                  h('span', { class: 'badge badge-genre', text: StoryGen.genreLabel(st.genre) }),
+                  durationBadge(st),
+                  h('span', { text: formatDate(st.updatedAt) })
+                ])
+              ]),
+              h('span', { class: 'chev' }, [icon('chevron')])
+            ]);
+          }))
+        : emptyState('book', 'Aucune histoire sauvegardée', 'Génère une histoire, puis appuie sur « Sauvegarder » pour la retrouver ici.')
+    ]);
+
+    return [pageHeader('Histoires'), storageWarning(), genCard, draftSection, list];
+  }
+
+  function scrollToId(id) {
+    requestAnimationFrame(function () {
+      var el = document.getElementById(id);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
+
+  /* ---------- Éditeur ---------- */
+
+  function escapeRegExp(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+  function renameEverywhere(story, oldName, newName) {
+    if (!oldName || oldName === newName) return;
+    var re = new RegExp('(^|[^A-Za-zÀ-ÖØ-öø-ÿ])' + escapeRegExp(oldName) + '(?![A-Za-zÀ-ÖØ-öø-ÿ])', 'g');
+    function rep(t) { return t.replace(re, function (m, pre) { return pre + newName; }); }
+    story.hook = rep(story.hook);
+    story.ending = rep(story.ending);
+    story.scenes.forEach(function (sc) {
+      sc.narration = rep(sc.narration);
+      sc.dialogues.forEach(function (d) { d.text = rep(d.text); });
+    });
+  }
+
+  function viewStoryEditor(param) {
+    if (param === 'brouillon') {
+      if (!editor.story || editor.story.id) { location.replace('#/histoires'); return []; }
+    } else if (!editor.story || editor.story.id !== param) {
+      var loaded = Store.getStory(param);
+      if (!loaded) {
+        return [pageHeader('Histoire', '#/histoires'), emptyState('book', 'Histoire introuvable', 'Elle a peut-être été supprimée.')];
+      }
+      editor.story = loaded;
+      editor.dirty = false;
+    }
+    editor.hash = location.hash;
+    var st = editor.story;
+
+    var durEl = h('div', { class: 'duration', role: 'status' });
+    function refresh() {
+      var d = durationInfo(st);
+      durEl.className = 'duration is-' + d.state;
+      durEl.replaceChildren(
+        h('span', { class: 'duration-sec', text: '≈ ' + d.sec + ' s' }),
+        h('span', { class: 'duration-msg', text: d.msg + ' · ' + StoryGen.words(st) + ' mots · ' + st.scenes.length + ' scènes' })
+      );
+    }
+    function changed() { editor.dirty = true; refresh(); }
+    refresh();
+
+    var titleInput = h('input', { class: 'input input-title', type: 'text', maxlength: '100', 'aria-label': 'Titre de l’histoire' });
+    titleInput.value = st.title;
+    titleInput.addEventListener('input', function () { st.title = titleInput.value; changed(); });
+
+    var genreSelect = h('select', { class: 'input', 'aria-label': 'Genre' }, StoryGen.GENRES.map(function (g) {
+      var o = h('option', { value: g.id, text: g.label });
+      if (g.id === st.genre) o.selected = true;
+      return o;
+    }));
+    genreSelect.addEventListener('change', function () { st.genre = genreSelect.value; changed(); });
+
+    var cast = h('div', { class: 'cast-edit' }, st.characters.map(function (c) {
+      var name = h('input', { class: 'input', type: 'text', maxlength: '40', 'aria-label': 'Nom du personnage' });
+      name.value = c.name;
+      var previous = c.name;
+      name.addEventListener('change', function () {
+        var v = name.value.trim().replace(/\s+/g, ' ');
+        if (!v) { name.value = previous; return; }
+        renameEverywhere(st, previous, v);
+        c.name = v; previous = v;
+        editor.dirty = true;
+        rerenderKeepScroll();
+        toast('Nom remplacé dans toute l’histoire');
+      });
+      var role = h('input', { class: 'input input-sm', type: 'text', maxlength: '40', placeholder: 'Rôle', 'aria-label': 'Rôle de ' + c.name });
+      role.value = c.role || '';
+      role.addEventListener('input', function () { c.role = role.value; changed(); });
+      return h('div', { class: 'cast-row' }, [name, role]);
+    }));
+
+    function speakerSelect(d) {
+      var sel = h('select', { class: 'input input-sm speaker', 'aria-label': 'Personnage qui parle' }, st.characters.map(function (c) {
+        var o = h('option', { value: c.key, text: c.name });
+        if (c.key === d.speaker) o.selected = true;
+        return o;
+      }));
+      sel.addEventListener('change', function () { d.speaker = sel.value; changed(); });
+      return sel;
+    }
+
+    var scenes = h('ol', { class: 'scenes-edit' }, st.scenes.map(function (sc, i) {
+      return h('li', { class: 'card scene-edit' }, [
+        h('div', { class: 'scene-head' }, [
+          h('p', { class: 'story-label', text: 'Scène ' + (i + 1) }),
+          h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Supprimer la scène ' + (i + 1), onclick: function () {
+            if (st.scenes.length <= 1) { toast('Une histoire doit garder au moins une scène'); return; }
+            if (!window.confirm('Supprimer la scène ' + (i + 1) + ' ?')) return;
+            st.scenes.splice(i, 1); editor.dirty = true; rerenderKeepScroll();
+          } }, [icon('trash')])
+        ]),
+        h('label', { class: 'field' }, [
+          h('span', { class: 'field-label', text: 'Narration' }),
+          textarea(sc.narration, 'Narration de la scène ' + (i + 1), function (v) { sc.narration = v; changed(); })
+        ]),
+        h('div', { class: 'lines-edit' }, sc.dialogues.map(function (d, j) {
+          return h('div', { class: 'line-edit' }, [
+            h('div', { class: 'line-edit-head' }, [
+              speakerSelect(d),
+              h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Supprimer la réplique', onclick: function () {
+                sc.dialogues.splice(j, 1); editor.dirty = true; rerenderKeepScroll();
+              } }, [icon('trash')])
+            ]),
+            textarea(d.text, 'Réplique', function (v) { d.text = v; changed(); })
+          ]);
+        })),
+        h('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: function () {
+          sc.dialogues.push({ speaker: st.characters[0].key, text: '' }); editor.dirty = true; rerenderKeepScroll();
+        } }, [icon('plus'), h('span', { text: 'Ajouter une réplique' })])
+      ]);
+    }));
+
+    var addScene = h('button', { type: 'button', class: 'btn btn-ghost btn-block', onclick: function () {
+      st.scenes.push({ narration: '', dialogues: [] }); editor.dirty = true; rerenderKeepScroll();
+    } }, [icon('plus'), h('span', { text: 'Ajouter une scène' })]);
+
+    var actions = h('div', { class: 'editor-bar' }, [
+      h('button', { type: 'button', class: 'btn btn-ghost', 'aria-label': 'Copier le texte', onclick: function () { copyText(StoryGen.toText(st)); } },
+        [icon('copy'), h('span', { text: 'Copier' })]),
+      h('button', { type: 'button', class: 'btn btn-primary', id: 'btn-save-story', onclick: function () {
+        if (!String(st.title).trim()) { toast('Donne un titre à ton histoire'); titleInput.focus(); return; }
+        var wasDraft = !st.id;
+        var res = Store.saveStory(st);
+        editor.story = res.story;
+        editor.dirty = false;
+        if (wasDraft) gen.draft = null;
+        toast(res.saved ? 'Histoire enregistrée' : 'Enregistrement impossible : stockage bloqué');
+        if (wasDraft) location.replace('#/histoire/' + encodeURIComponent(res.story.id));
+      } }, [icon('save'), h('span', { text: 'Enregistrer' })])
+    ]);
+
+    var del = st.id ? h('button', { type: 'button', class: 'btn btn-danger btn-block', onclick: function () {
+      if (!window.confirm('Supprimer l’histoire « ' + st.title + ' » ? Cette action est définitive.')) return;
+      Store.deleteStory(st.id);
+      editor.story = null; editor.dirty = false;
+      toast('Histoire supprimée');
+      location.hash = '#/histoires';
+    } }, [icon('trash'), h('span', { text: 'Supprimer l’histoire' })]) : null;
+
+    return [
+      pageHeader(st.id ? 'Modifier' : 'Nouvelle histoire', '#/histoires'),
+      durEl,
+      h('section', { class: 'section' }, [
+        h('label', { class: 'field' }, [h('span', { class: 'field-label', text: 'Titre' }), titleInput]),
+        h('label', { class: 'field' }, [h('span', { class: 'field-label', text: 'Genre' }), genreSelect])
+      ]),
+      h('section', { class: 'section' }, [
+        sectionHeader('Personnages'),
+        h('p', { class: 'hint', text: 'Change un nom : il sera remplacé partout dans l’histoire.' }),
+        cast
+      ]),
+      h('section', { class: 'section' }, [
+        sectionHeader('Hook'),
+        h('p', { class: 'hint', text: 'La phrase des premières secondes, celle qui accroche.' }),
+        textarea(st.hook, 'Hook', function (v) { st.hook = v; changed(); }, 'textarea-hook')
+      ]),
+      h('section', { class: 'section' }, [sectionHeader('Scènes'), scenes, addScene]),
+      h('section', { class: 'section' }, [
+        sectionHeader('Fin surprenante'),
+        textarea(st.ending, 'Fin', function (v) { st.ending = v; changed(); }, 'textarea-ending')
+      ]),
+      del,
+      actions
+    ];
+  }
+
+  function rerenderKeepScroll() {
+    var y = window.scrollY;
+    render();
+    window.scrollTo(0, y);
+  }
+
   var ROUTES = {
     accueil: viewHome,
     projets: viewProjects,
@@ -240,26 +585,29 @@
         'La bibliothèque rassemblera tous les personnages de tes vidéos.',
         ['Créer une fiche personnage', 'Nom, description et style', 'Réutiliser un personnage dans plusieurs vidéos']);
     },
-    histoires: function () {
-      return viewSoon('Histoires', 'book',
-        'Le générateur t’aidera à trouver des idées et à écrire tes scénarios.',
-        ['Idées de départ', 'Structure en scènes', 'Envoi du scénario vers un projet vidéo']);
-    }
+    histoires: viewStories,
+    histoire: viewStoryEditor
   };
 
-  function currentRoute() {
-    var r = (location.hash || '').replace(/^#\/?/, '');
-    return ROUTES[r] ? r : 'accueil';
+  function parseRoute() {
+    var parts = (location.hash || '').replace(/^#\/?/, '').split('/');
+    var name = ROUTES[parts[0]] ? parts[0] : 'accueil';
+    var param = '';
+    try { param = decodeURIComponent(parts.slice(1).join('/')); } catch (e) { param = ''; }
+    return { name: name, param: param };
   }
 
+  function currentRoute() { return parseRoute().name; }
+
   function render() {
-    var route = currentRoute();
-    var nodes = ROUTES[route]();
+    var route = parseRoute();
+    var nodes = ROUTES[route.name](route.param);
     var view = h('div', { class: 'view' }, nodes);
     app.replaceChildren(view);
 
+    var tabName = route.name === 'histoire' ? 'histoires' : route.name;
     document.querySelectorAll('.tab[data-route]').forEach(function (t) {
-      var active = t.getAttribute('data-route') === route;
+      var active = t.getAttribute('data-route') === tabName;
       t.classList.toggle('is-active', active);
       if (active) t.setAttribute('aria-current', 'page'); else t.removeAttribute('aria-current');
     });
@@ -311,9 +659,26 @@
     else if (action === 'close-sheet') closeSheet();
   });
 
+  var restoringHash = false;
   window.addEventListener('hashchange', function () {
+    if (restoringHash) { restoringHash = false; return; }
+    var leavingEditor = editor.dirty && location.hash !== editor.hash;
+    if (leavingEditor) {
+      if (!window.confirm('Tu as des modifications non enregistrées. Quitter quand même ?')) {
+        restoringHash = true;
+        location.hash = editor.hash;
+        return;
+      }
+      editor.dirty = false;
+      if (editor.story && !editor.story.id) editor.story = null;
+    }
+    if (currentRoute() !== 'histoire') editor.story = null;
     render();
     window.scrollTo(0, 0);
+  });
+
+  window.addEventListener('beforeunload', function (e) {
+    if (editor.dirty) { e.preventDefault(); e.returnValue = ''; }
   });
 
   window.addEventListener('storage', render); // synchronise si un autre onglet modifie les données

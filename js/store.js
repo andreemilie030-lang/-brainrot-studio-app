@@ -9,7 +9,7 @@
   var memory = null; // repli si localStorage est indisponible (navigation privée, etc.)
 
   function emptyState() {
-    return { projects: [], videos: [] };
+    return { projects: [], videos: [], stories: [] };
   }
 
   function isValid(s) {
@@ -21,7 +21,9 @@
       var raw = window.localStorage.getItem(KEY);
       if (!raw) return emptyState();
       var parsed = JSON.parse(raw);
-      return isValid(parsed) ? parsed : emptyState();
+      if (!isValid(parsed)) return emptyState();
+      if (!Array.isArray(parsed.stories)) parsed.stories = []; // données d'une version précédente
+      return parsed;
     } catch (e) {
       return memory || emptyState();
     }
@@ -77,6 +79,44 @@
     deleteProject: function (id) {
       var state = load();
       state.projects = state.projects.filter(function (p) { return p.id !== id; });
+      save(state);
+    },
+
+    /* ----- Histoires ----- */
+
+    stories: function () {
+      return load().stories.slice().sort(function (a, b) { return b.updatedAt - a.updatedAt; });
+    },
+
+    getStory: function (id) {
+      var list = load().stories;
+      for (var i = 0; i < list.length; i++) if (list[i].id === id) return JSON.parse(JSON.stringify(list[i]));
+      return null;
+    },
+
+    /** Crée (sans id) ou met à jour (avec id) une histoire. Renvoie { story, saved }. */
+    saveStory: function (story) {
+      var state = load();
+      var now = Date.now();
+      var copy = JSON.parse(JSON.stringify(story));
+      copy.title = String(copy.title || '').trim().slice(0, 100) || 'Histoire sans titre';
+      copy.updatedAt = now;
+      var idx = -1;
+      if (copy.id) for (var i = 0; i < state.stories.length; i++) if (state.stories[i].id === copy.id) idx = i;
+      if (idx === -1) {
+        copy.id = copy.id || uid();
+        copy.createdAt = now;
+        state.stories.push(copy);
+      } else {
+        copy.createdAt = state.stories[idx].createdAt;
+        state.stories[idx] = copy;
+      }
+      return { story: copy, saved: save(state) };
+    },
+
+    deleteStory: function (id) {
+      var state = load();
+      state.stories = state.stories.filter(function (s) { return s.id !== id; });
       save(state);
     }
   };
