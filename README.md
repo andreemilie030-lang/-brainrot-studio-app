@@ -20,9 +20,21 @@ Studio de création de vidéos, pensé pour l'iPhone.
   Écoute avec la synthèse vocale de l'appareil (voix, vitesse et hauteur par rôle) ; une écoute
   complète cale le minutage sur la vraie voix. Exports : sous-titres `.srt` et `.vtt`, données `.json`,
   script audio texte.
+- **Studio de montage** : timeline de 60 à 90 s calée sur la piste audio (pistes plans, images,
+  voix, sous-titres, bruitages, ambiance). Chaque scène est découpée en plans de 4,5 s maximum,
+  avec cadrage, mouvement (zoom avant/arrière, punch-in, glissements) et transition (fondu, fondu au
+  noir, flash blanc, flou, glitch, zoom). Une image par scène, importée depuis les photos et stockée
+  sur l'appareil (IndexedDB). Aperçu animé muet dans l'appli. Export d'un **pack .zip pour CapCut**.
 - **Navigation** en bas de l'écran, style iPhone.
 
-Module annoncé mais **pas encore disponible** : étapes de production vidéo.
+### Montage : pas de rendu vidéo
+
+L'appli **ne produit pas de fichier MP4**. L'aperçu est une simulation à l'écran (sans la voix).
+CapCut sur iPhone n'importe pas de projet de montage externe : le pack `.zip` contient donc de quoi
+assembler la vidéo à la main — `LISEZ-MOI.txt` (mode d'emploi CapCut), `plan-de-montage.txt`
+et `.csv` (horaires, image, cadrage, images clés, transition par plan), `sous-titres.srt`,
+`script-audio.txt`, `prompts-images.txt`, `montage.json` et `images/` (JPEG numérotés).
+L'archive est créée dans le navigateur (`js/zip.js`, format ZIP standard sans compression).
 
 ### Synthèse vocale : ce qui est vraiment gratuit
 

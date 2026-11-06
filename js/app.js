@@ -207,6 +207,9 @@
           'Disponible'),
         moduleCard('#/audio', 'mic', 'Studio audio',
           Store.audioStoryIds().length ? Store.audioStoryIds().length + ' piste' + (Store.audioStoryIds().length > 1 ? 's audio prêtes' : ' audio prête') : 'Voix, bruitages et sous-titres synchronisés.',
+          'Disponible'),
+        moduleCard('#/montage', 'film', 'Studio de montage',
+          Store.montageStoryIds().length ? Store.montageStoryIds().length + ' montage' + (Store.montageStoryIds().length > 1 ? 's prêts' : ' prêt') : 'Timeline, mouvements, transitions et pack CapCut.',
           'Disponible')
       ])
     ]);
@@ -565,6 +568,7 @@
     var del = st.id ? h('button', { type: 'button', class: 'btn btn-danger btn-block', onclick: function () {
       if (!window.confirm('Supprimer l’histoire « ' + st.title + ' » ? Cette action est définitive.')) return;
       Store.deleteStory(st.id);
+      if (window.Media) Media.removeStory(st.id).catch(function () {});
       editor.story = null; editor.dirty = false;
       toast('Histoire supprimée');
       location.hash = '#/histoires';
@@ -592,6 +596,8 @@
         sectionHeader('Fin surprenante'),
         textarea(st.ending, 'Fin', function (v) { st.ending = v; changed(); }, 'textarea-ending')
       ]),
+      st.id ? h('a', { class: 'btn btn-ghost btn-block', href: '#/montage/' + encodeURIComponent(st.id), id: 'btn-open-montage' },
+        [icon('film'), h('span', { text: 'Studio de montage de cette histoire' })]) : null,
       st.id ? h('a', { class: 'btn btn-ghost btn-block', href: '#/audio/' + encodeURIComponent(st.id), id: 'btn-open-audio' },
         [icon('mic'), h('span', { text: 'Studio audio de cette histoire' })]) : null,
       del,
@@ -1293,11 +1299,504 @@
       rebuild(false);
     } }, [icon('sparkle'), h('span', { text: 'Recréer la piste depuis l’histoire' })]));
 
+    nodes.splice(nodes.length - 1, 0, h('a', { class: 'btn btn-primary btn-block', href: '#/montage/' + encodeURIComponent(storyId), id: 'btn-go-montage' },
+      [icon('film'), h('span', { text: 'Passer au montage' })]));
+
     return nodes;
   }
 
   function statTile(value, label) {
     return h('div', { class: 'card stat' }, [h('p', { class: 'stat-value', text: value }), h('p', { class: 'stat-label', text: label })]);
+  }
+
+
+  /* ---------- Studio de montage ---------- */
+  // Aperçu animé dans l'appli + plan de montage exportable. Aucun rendu de fichier vidéo.
+
+  var PPS = 16; // pixels par seconde sur la timeline
+  var mUI = { storyId: null, images: {}, urls: [], loadedFor: null, selected: 0, t: 0, playing: false, raf: 0, t0: 0, from: 0, shown: -1 };
+
+  function libraryMap() {
+    var map = {};
+    Store.characters().forEach(function (c) { map[c.id] = c; });
+    return map;
+  }
+
+  function revokeImages() {
+    mUI.urls.forEach(function (u) { URL.revokeObjectURL(u); });
+    mUI.urls = [];
+    mUI.images = {};
+  }
+
+  function loadImages(storyId) {
+    mUI.loadedFor = storyId;
+    if (!window.Media) return;
+    Media.list(storyId).then(function (map) {
+      if (mUI.storyId !== storyId) return;
+      revokeImages();
+      Object.keys(map).forEach(function (k) {
+        var u = URL.createObjectURL(map[k].blob);
+        mUI.urls.push(u);
+        mUI.images[k] = { url: u, ext: map[k].ext, blob: map[k].blob, width: map[k].width, height: map[k].height };
+      });
+      if (currentRoute() === 'montage' && Object.keys(map).length) rerenderKeepScroll();
+    }, function () { /* stockage d'images indisponible : l'aperçu utilise des cartes de scène */ });
+  }
+
+  function stopPreview() {
+    mUI.playing = false;
+    if (mUI.raf) cancelAnimationFrame(mUI.raf);
+    mUI.raf = 0;
+    var b = document.getElementById('btn-preview');
+    if (b) b.replaceChildren(icon('play'), h('span', { text: 'Lire l’aperçu' }));
+  }
+
+  function timedAudio(story, audio) {
+    AudioScript.timeline(audio.segments, audio.voices);
+    return audio;
+  }
+
+  /** Empreinte des horaires de la voix : le montage n'est à recaler que si elle change. */
+  function audioSig(audio) {
+    return audio.segments.filter(AudioScript.isSpoken).map(function (x) { return x.id + ':' + x.start + '-' + x.end; }).join('|');
+  }
+
+  function prepareMontage(story, previous) {
+    var audio = Store.getAudio(story.id);
+    var createdAudio = false;
+    if (!audio) { audio = buildAudio(story); Store.saveAudio(audio); audio = Store.getAudio(story.id); createdAudio = true; }
+    else if (story.updatedAt > (audio.storyUpdatedAt || 0)) {
+      // L'histoire a changé : la piste audio est recalée d'abord (réglages de voix gardés).
+      var voices = audio.voices;
+      audio = buildAudio(story);
+      Object.keys(voices).forEach(function (k) { if (audio.voices[k]) audio.voices[k] = voices[k]; });
+      Store.saveAudio(audio); audio = Store.getAudio(story.id); createdAudio = true;
+    }
+    timedAudio(story, audio);
+    var m = Montage.build(story, audio, libraryMap(), previous);
+    m.audioSig = audioSig(audio);
+    var res = Store.saveMontage(m);
+    if (!res.saved) toast('Enregistrement impossible : stockage bloqué');
+    return createdAudio;
+  }
+
+  function viewMontageList() {
+    var stories = Store.stories();
+    var ready = Store.montageStoryIds();
+    return [
+      pageHeader('Studio de montage'),
+      h('section', { class: 'card generator' }, [
+        h('h2', { class: 'generator-title', text: 'Studio de montage' }),
+        h('p', { class: 'generator-text', text: 'Organise plans, images, voix, sous-titres et bruitages sur une timeline de 60 à 90 secondes, avec zooms, panoramiques et transitions, puis exporte un pack prêt à assembler dans CapCut.' }),
+        h('p', { class: 'generator-note', text: 'BRAINROT STUDIO ne fabrique pas de fichier vidéo (MP4) : il prépare le montage, la vidéo s’assemble dans CapCut.' })
+      ]),
+      h('section', { class: 'section' }, [
+        sectionHeader('Choisis une histoire'),
+        stories.length
+          ? h('div', { class: 'list' }, stories.map(function (st) {
+              var has = ready.indexOf(st.id) !== -1;
+              return h('a', { class: 'card story-card', href: '#/montage/' + encodeURIComponent(st.id) }, [
+                h('div', { class: 'module-icon' }, [icon('film')]),
+                h('div', { class: 'project-info' }, [
+                  h('h3', { class: 'project-title', text: st.title }),
+                  h('p', { class: 'project-meta' }, [
+                    h('span', { class: 'badge badge-genre', text: StoryGen.genreLabel(st.genre) }),
+                    h('span', { class: has ? 'badge badge-ready' : 'badge badge-soon', text: has ? 'Montage prêt' : 'À préparer' })
+                  ])
+                ]),
+                h('span', { class: 'chev' }, [icon('chevron')])
+              ]);
+            }))
+          : h('div', { class: 'cast-empty' }, [
+              emptyState('film', 'Aucune histoire sauvegardée', 'Le montage part d’une histoire : génère-en une et sauvegarde-la d’abord.'),
+              h('a', { class: 'btn btn-ghost btn-sm', href: '#/histoires' }, [icon('book'), h('span', { text: 'Aller au générateur' })])
+            ])
+      ])
+    ];
+  }
+
+  function viewMontage(storyId) {
+    if (!storyId) return viewMontageList();
+    var story = Store.getStory(storyId);
+    if (!story) return [pageHeader('Montage', '#/montage'), emptyState('film', 'Histoire introuvable', 'Elle a peut-être été supprimée.')];
+    if (mUI.storyId !== storyId) {
+      stopPreview(); revokeImages();
+      mUI.storyId = storyId; mUI.selected = 0; mUI.t = 0; mUI.shown = -1;
+    }
+    if (mUI.loadedFor !== storyId) loadImages(storyId);
+    if (mUI.raf) { cancelAnimationFrame(mUI.raf); mUI.raf = 0; } // la lecture reprend sur le nouvel affichage
+
+    var head = pageHeader('Studio de montage', '#/histoire/' + encodeURIComponent(storyId));
+    var intro = h('div', { class: 'card char-hero' }, [
+      h('div', { class: 'module-icon' }, [icon('film')]),
+      h('div', { class: 'char-hero-body' }, [
+        h('h2', { class: 'story-title', text: story.title }),
+        h('span', { class: 'badge badge-genre', text: StoryGen.genreLabel(story.genre) })
+      ])
+    ]);
+
+    var montage = Store.getMontage(storyId);
+    var audio = Store.getAudio(storyId);
+    if (!montage || !audio) {
+      return [head, storageWarning(), intro, h('section', { class: 'card generator' }, [
+        h('p', { class: 'generator-text', text: 'Le montage se cale sur la piste audio : chaque scène devient un ou plusieurs plans, avec cadrage, mouvement de caméra et transition. Une image par scène, que tu importes depuis tes photos.' }),
+        audio ? null : h('p', { class: 'generator-note', text: 'Cette histoire n’a pas encore de piste audio : elle sera créée automatiquement.' }),
+        h('button', { type: 'button', class: 'btn btn-primary btn-block', id: 'btn-build-montage', onclick: function () {
+          var created = prepareMontage(story, null);
+          toast(created ? 'Piste audio et montage prêts' : 'Montage prêt');
+          rerenderKeepScroll();
+        } }, [icon('sparkle'), h('span', { text: 'Préparer le montage' })])
+      ])];
+    }
+
+    timedAudio(story, audio);
+    var names = AudioScript.namesOf(story);
+    var cues = AudioScript.subtitles(audio.segments, names);
+    var voice = audio.segments.filter(AudioScript.isSpoken);
+    var sfx = audio.segments.filter(function (x) { return x.kind === 'sfx'; });
+    var shots = montage.shots;
+    var sceneOf = {};
+    montage.scenes.forEach(function (sc, i) { sceneOf[sc.scene] = { sc: sc, index: i }; });
+    if (mUI.selected >= shots.length) mUI.selected = 0;
+    if (mUI.t > montage.total) mUI.t = 0;
+    var imgCount = montage.scenes.filter(function (sc) { return mUI.images[sc.scene]; }).length;
+    var inRange = montage.total >= 60 && montage.total <= 90;
+    var stale = story.updatedAt > (montage.storyUpdatedAt || 0) || (montage.audioSig && montage.audioSig !== audioSig(audio));
+
+    function persist() {
+      Store.saveMontage(montage);
+    }
+
+    var nodes = [head, storageWarning(), intro];
+
+    if (stale) {
+      nodes.push(h('div', { class: 'warning warning-action' }, [
+        h('p', { text: 'L’histoire ou la piste audio a changé depuis la préparation du montage. Recale le montage pour suivre les nouveaux horaires (tes réglages de plans et tes images sont gardés).' }),
+        h('button', { type: 'button', class: 'btn btn-ghost btn-sm', id: 'btn-resync-montage', onclick: function () {
+          stopPreview();
+          prepareMontage(story, montage);
+          toast('Montage recalé');
+          rerenderKeepScroll();
+        } }, ['Recaler le montage'])
+      ]));
+    }
+
+    nodes.push(h('section', { class: 'stats stats-4', 'aria-label': 'Résumé du montage' }, [
+      statTile(Montage.clock(montage.total).replace(/^0(\d):/, '$1:'), inRange ? 'Durée (cible 60–90 s)' : 'Durée hors cible'),
+      statTile(String(shots.length), 'Plans'),
+      statTile(imgCount + '/' + montage.scenes.length, 'Images importées'),
+      statTile(String(shots.filter(function (x) { return x.transition !== 'cut'; }).length), 'Transitions')
+    ]));
+
+    /* ----- Aperçu ----- */
+    function layer(cls) {
+      return h('div', { class: 'pv-layer ' + cls }, []);
+    }
+    var layerA = layer('pv-a'), layerB = layer('pv-b');
+    var flash = h('div', { class: 'pv-flash' });
+    var sub = h('div', { class: 'pv-sub' });
+    var fxTag = h('div', { class: 'pv-fx' });
+    var badge = h('div', { class: 'pv-label' });
+    var clockEl = h('span', { class: 'pv-clock', id: 'pv-clock' });
+    var frame = h('div', { class: 'pv', id: 'preview', 'aria-label': 'Aperçu du montage' }, [layerB, layerA, flash, badge, fxTag, sub]);
+
+    function fill(el, shot) {
+      var sc = sceneOf[shot.scene].sc;
+      var img = mUI.images[shot.scene];
+      // Sans image : fond quadrillé animé (le mouvement reste visible) + texte fixe et lisible.
+      if (img) el.replaceChildren(h('img', { class: 'pv-media', src: img.url, alt: '' }));
+      else el.replaceChildren(h('div', { class: 'pv-media pv-ph-bg' }), h('div', { class: 'pv-ph' }, [
+        h('p', { class: 'pv-ph-label', text: sc.label + ' · image à importer' }),
+        h('p', { class: 'pv-ph-text', text: sc.text })
+      ]));
+      el.setAttribute('data-shot', shot.id);
+    }
+
+    function setTransform(el, shot, t, extra) {
+      var media = el.firstChild;
+      if (!media) return;
+      var tr = Montage.transformAt(shot, t);
+      var s = tr.s * (extra && extra.scale || 1);
+      var x = tr.x + (extra && extra.dx || 0);
+      media.style.transform = 'translate(' + x.toFixed(2) + '%, ' + tr.y.toFixed(2) + '%) scale(' + s.toFixed(4) + ')';
+    }
+
+    function drawFrame(t) {
+      var i = Montage.shotAt(montage, t);
+      var shot = shots[i], prev = shots[i - 1];
+      if (mUI.shown !== i || !layerA.firstChild) {
+        if (prev) fill(layerB, prev); else layerB.replaceChildren();
+        fill(layerA, shot);
+        mUI.shown = i;
+        document.querySelectorAll('.tl-shot.is-playing').forEach(function (e) { e.classList.remove('is-playing'); });
+        var blk = document.getElementById('tl-' + shot.id);
+        if (blk) blk.classList.add('is-playing');
+      }
+      var tr = Montage.TRANSITIONS[shot.transition] || Montage.TRANSITIONS.cut;
+      var inT = t - shot.start;
+      var p = tr.duration ? Math.min(1, inT / tr.duration) : 1;
+      var active = prev && tr.duration && inT < tr.duration;
+      var extra = null;
+      layerA.style.opacity = '1'; layerA.style.filter = 'none';
+      layerB.style.opacity = '0';
+      flash.style.opacity = '0'; flash.className = 'pv-flash';
+      if (active) {
+        if (shot.transition === 'fade') { layerB.style.opacity = '1'; layerA.style.opacity = String(p); }
+        else if (shot.transition === 'black') {
+          flash.className = 'pv-flash is-black';
+          if (p < 0.5) { layerB.style.opacity = '1'; layerA.style.opacity = '0'; flash.style.opacity = String(p * 2); }
+          else flash.style.opacity = String((1 - p) * 2);
+        } else if (shot.transition === 'white') { flash.className = 'pv-flash is-white'; flash.style.opacity = String(1 - p); }
+        else if (shot.transition === 'blur') { layerB.style.opacity = '1'; layerA.style.opacity = String(p); layerA.style.filter = 'blur(' + ((1 - p) * 14).toFixed(1) + 'px)'; }
+        else if (shot.transition === 'glitch') { extra = { dx: (Math.random() - 0.5) * 8 * (1 - p) }; layerA.style.filter = 'hue-rotate(' + Math.round((1 - p) * 90) + 'deg) contrast(1.4)'; }
+        else if (shot.transition === 'zoom') { extra = { scale: 1 + (1 - p) * 0.35 }; layerB.style.opacity = '1'; layerA.style.opacity = String(p); }
+      }
+      setTransform(layerA, shot, t, extra);
+      if (prev) setTransform(layerB, prev, t);
+      var sc = sceneOf[shot.scene].sc;
+      badge.textContent = 'Plan ' + (i + 1) + ' · ' + sc.label;
+      var cue = null;
+      for (var c = 0; c < cues.length; c++) if (t >= cues[c].start && t < cues[c].end) { cue = cues[c]; break; }
+      sub.textContent = cue ? cue.text.replace(/\n/g, ' ') : ''; // l'aperçu est plus étroit que l'écran final
+      sub.style.visibility = cue ? 'visible' : 'hidden';
+      var fx = sfx.filter(function (x) { return t >= x.start && t < x.end; });
+      fxTag.textContent = fx.length ? 'Bruitage : ' + fx.map(function (x) { return x.text; }).join(' + ') : '';
+      fxTag.style.visibility = fx.length ? 'visible' : 'hidden';
+      clockEl.textContent = Montage.clock(t) + ' / ' + Montage.clock(montage.total);
+      var ph = document.getElementById('tl-playhead');
+      if (ph) ph.style.transform = 'translateX(' + (t * PPS).toFixed(1) + 'px)';
+    }
+
+    function loop() {
+      if (!mUI.playing) return;
+      var t = mUI.from + (performance.now() - mUI.t0) / 1000;
+      if (t >= montage.total) { mUI.t = montage.total; drawFrame(montage.total - 0.001); stopPreview(); mUI.t = 0; return; }
+      mUI.t = t;
+      drawFrame(t);
+      var tl = document.getElementById('timeline');
+      if (tl) {
+        var x = t * PPS + 64;
+        if (x > tl.scrollLeft + tl.clientWidth - 40 || x < tl.scrollLeft) tl.scrollLeft = x - 80;
+      }
+      mUI.raf = requestAnimationFrame(loop);
+    }
+
+    function play() {
+      if (mUI.t >= montage.total - 0.05) mUI.t = 0;
+      mUI.playing = true; mUI.from = mUI.t; mUI.t0 = performance.now();
+      var b = document.getElementById('btn-preview');
+      if (b) b.replaceChildren(icon('stop'), h('span', { text: 'Pause' }));
+      mUI.raf = requestAnimationFrame(loop);
+    }
+
+    function seek(t) {
+      mUI.t = Math.max(0, Math.min(montage.total - 0.001, t));
+      if (mUI.playing) { mUI.from = mUI.t; mUI.t0 = performance.now(); }
+      drawFrame(mUI.t);
+    }
+
+    nodes.push(h('section', { class: 'card player' }, [
+      h('div', { class: 'player-head' }, [
+        h('p', { class: 'story-label', text: 'Aperçu (muet)' }),
+        clockEl
+      ]),
+      frame,
+      h('div', { class: 'actions-row' }, [
+        h('button', { type: 'button', class: 'btn btn-ghost', onclick: function () { seek(0); } }, [icon('back'), h('span', { text: 'Début' })]),
+        h('button', { type: 'button', class: 'btn btn-primary', id: 'btn-preview', onclick: function () { if (mUI.playing) stopPreview(); else play(); } },
+          [icon('play'), h('span', { text: 'Lire l’aperçu' })])
+      ]),
+      h('p', { class: 'generator-note', text: 'Simulation dans l’appli : mouvements, transitions, sous-titres et repères de bruitages. Ce n’est pas un fichier vidéo, et la voix n’y est pas jouée (écoute-la dans le studio audio).' })
+    ]));
+
+    /* ----- Timeline ----- */
+    var width = Math.ceil(montage.total * PPS);
+    function pos(a, b) { return { left: (a * PPS).toFixed(1) + 'px', width: Math.max(3, (b - a) * PPS - 2).toFixed(1) + 'px' }; }
+    function block(cls, a, b, text, attrs) {
+      var el = h(attrs && attrs.button ? 'button' : 'div', Object.assign({ class: 'tl-block ' + cls, title: text }, attrs && attrs.extra || {}), [text]);
+      var p2 = pos(a, b);
+      el.style.left = p2.left; el.style.width = p2.width;
+      return el;
+    }
+    function track(label, children, cls) {
+      var lane = h('div', { class: 'tl-lane ' + (cls || '') }, children);
+      lane.style.width = width + 'px';
+      return h('div', { class: 'tl-row' + (cls === 'tl-tall' ? ' tl-row-tall' : '') }, [h('span', { class: 'tl-label', text: label }), lane]);
+    }
+    var ticks = [];
+    for (var tk = 0; tk <= montage.total; tk += 5) {
+      var tick = h('span', { class: 'tl-tick', text: Montage.clock(tk).replace(/\.0$/, '').replace(/^00:/, '0:') });
+      tick.style.left = (tk * PPS) + 'px';
+      ticks.push(tick);
+    }
+    var ruler = track('', ticks, 'tl-ruler');
+    ruler.firstChild.nextSibling.addEventListener('click', function (e) {
+      var r = e.currentTarget.getBoundingClientRect();
+      seek((e.clientX - r.left) / PPS);
+    });
+    var shotBlocks = shots.map(function (s, i) {
+      var b = block('tl-shot' + (sceneOf[s.scene].index % 2 ? ' alt' : '') + (i === mUI.selected ? ' is-selected' : '') + (s.transition !== 'cut' ? ' has-tr' : ''),
+        s.start, s.end, 'P' + (i + 1), { button: true, extra: { type: 'button', id: 'tl-' + s.id, 'aria-label': 'Plan ' + (i + 1) } });
+      b.addEventListener('click', function () {
+        mUI.selected = i; seek(s.start + 0.01);
+        stopPreview();
+        rerenderKeepScroll();
+      });
+      return b;
+    });
+    var playhead = h('div', { class: 'tl-playhead', id: 'tl-playhead', 'aria-hidden': 'true' });
+    var tlInner = h('div', { class: 'tl-inner' }, [
+      ruler,
+      track('Plans', shotBlocks, 'tl-tall'),
+      track('Images', montage.scenes.map(function (sc) {
+        var has = !!mUI.images[sc.scene];
+        var el = block('tl-img' + (has ? ' has-img' : ''), sc.start, sc.end, has ? sc.label : sc.label + ' · manquante');
+        return el;
+      })),
+      track('Voix', voice.map(function (v) {
+        return block(v.kind === 'dialogue' ? 'tl-dlg' : 'tl-nar', v.start, v.end, names[v.speaker] || v.speaker);
+      })),
+      track('Sous-titres', cues.map(function (c) { return block('tl-sub', c.start, c.end, c.text.replace(/\n/g, ' ')); })),
+      track('Bruitages', sfx.map(function (x) { return block('tl-sfx', x.start, x.end, x.text); })),
+      track('Ambiance', audio.ambiance ? [block('tl-amb', 0, montage.total, audio.ambiance)] : []),
+      playhead
+    ]);
+    nodes.push(h('section', { class: 'section' }, [
+      sectionHeader('Timeline'),
+      h('p', { class: 'hint', text: 'Fais défiler horizontalement. Touche un plan pour le régler, ou la règle des secondes pour te placer.' }),
+      (function () {
+        var tl = h('div', { class: 'card tl', id: 'timeline' }, [tlInner]);
+        tl.addEventListener('scroll', function () { mUI.tlScroll = tl.scrollLeft; });
+        return tl;
+      })()
+    ]));
+
+    /* ----- Inspecteur du plan sélectionné ----- */
+    var shot = shots[mUI.selected];
+    var scInfo = sceneOf[shot.scene];
+    var sc = scInfo.sc;
+    var sameScene = shots.filter(function (x) { return x.scene === shot.scene; }).length;
+    var img = mUI.images[shot.scene];
+
+    function select(label, options, value, onChange, disabled) {
+      var el = h('select', { class: 'input', 'aria-label': label, disabled: !!disabled }, Object.keys(options).map(function (k) {
+        var o = h('option', { value: k, text: typeof options[k] === 'string' ? options[k] : options[k].label + (options[k].duration ? ' (' + String(options[k].duration).replace('.', ',') + ' s)' : '') });
+        if (k === value) o.selected = true;
+        return o;
+      }));
+      el.addEventListener('change', function () { onChange(el.value); });
+      return h('label', { class: 'field' }, [h('span', { class: 'field-label', text: label }), el]);
+    }
+
+    var fileInput = h('input', { type: 'file', accept: 'image/*', class: 'sr-only', id: 'image-input', tabindex: '-1' });
+    fileInput.addEventListener('change', function () {
+      var f = fileInput.files && fileInput.files[0];
+      if (!f) return;
+      toast('Import de l’image…');
+      Media.prepare(f).then(function (rec) {
+        return Media.put(storyId, shot.scene, rec);
+      }).then(function () {
+        toast('Image importée pour « ' + sc.label + ' »');
+        mUI.loadedFor = null; mUI.shown = -1;
+        rerenderKeepScroll();
+      }, function (err) { toast(err && err.message ? err.message : 'Import impossible'); });
+    });
+
+    nodes.push(h('section', { class: 'section', id: 'inspector' }, [
+      sectionHeader('Plan ' + (mUI.selected + 1) + ' · ' + sc.label + (shot.parts > 1 ? ' (' + shot.part + '/' + shot.parts + ')' : '')),
+      h('div', { class: 'card inspector' }, [
+        h('p', { class: 'seg-time', text: Montage.clock(shot.start) + ' → ' + Montage.clock(shot.end) + ' · ' + (shot.end - shot.start).toFixed(1).replace('.', ',') + ' s' }),
+        h('p', { class: 'seg-text', text: sc.text }),
+        h('div', { class: 'insp-image' }, [
+          img ? h('img', { class: 'insp-thumb', src: img.url, alt: 'Image de ' + sc.label }) : h('div', { class: 'insp-thumb insp-empty' }, [icon('image')]),
+          h('div', { class: 'insp-image-body' }, [
+            h('p', { class: 'field-label', text: 'Image de la scène' }),
+            h('p', { class: 'hint', text: (img ? 'Importée' : 'Pas encore d’image') + (sameScene > 1 ? ' · utilisée par les ' + sameScene + ' plans de la scène' : '') }),
+            h('label', { class: 'btn btn-ghost btn-sm', for: 'image-input', id: 'btn-import-image', role: 'button', tabindex: '0' }, [icon('image'), h('span', { text: img ? 'Remplacer' : 'Importer' })]),
+            fileInput,
+            img ? h('button', { type: 'button', class: 'btn btn-ghost btn-sm', id: 'btn-remove-image', onclick: function () {
+              Media.remove(storyId, shot.scene).then(function () { mUI.loadedFor = null; mUI.shown = -1; revokeImages(); toast('Image retirée'); rerenderKeepScroll(); });
+            } }, [icon('trash'), h('span', { text: 'Retirer' })]) : null
+          ])
+        ]),
+        select('Cadrage', Montage.SHOT_TYPES, shot.shotType, function (v) {
+          shot.shotType = v;
+          if (shot.part === 1) { sc.shotType = v; sc.imagePrompt = Montage.scenePrompt(story, sc.scene, v, libraryMap()); }
+          persist(); rerenderKeepScroll();
+        }),
+        select('Mouvement de caméra', Montage.MOVES, shot.movement, function (v) { shot.movement = v; persist(); mUI.shown = -1; seek(shot.start + 0.01); rerenderKeepScroll(); }),
+        select(mUI.selected === 0 ? 'Transition d’entrée (début de la vidéo)' : 'Transition d’entrée', Montage.TRANSITIONS, shot.transition,
+          function (v) { shot.transition = v; persist(); rerenderKeepScroll(); }, mUI.selected === 0),
+        h('p', { class: 'hint', text: 'Dans CapCut : ' + Montage.keyframes(shot.movement) + '.' }),
+        promptBox('Prompt d’image de la scène', sc.imagePrompt, 'btn-copy-scene-prompt')
+      ])
+    ]));
+
+    /* ----- Exports ----- */
+    function imagesForExport() {
+      var out = {};
+      Object.keys(mUI.images).forEach(function (k) { out[k] = { ext: mUI.images[k].ext }; });
+      return out;
+    }
+    var base = slug(story.title);
+    nodes.push(h('section', { class: 'section' }, [
+      sectionHeader('Exporter pour CapCut'),
+      h('p', { class: 'hint', text: 'Le pack .zip contient les images numérotées, le plan de montage (texte et tableau), les sous-titres .srt, le script audio, les prompts d’images et les données .json, avec un mode d’emploi CapCut.' }),
+      h('button', { type: 'button', class: 'btn btn-primary btn-block', id: 'btn-export-pack', onclick: function () {
+        var imgs = imagesForExport();
+        var files = [
+          { name: 'LISEZ-MOI.txt', data: Montage.readme(story, montage, Object.keys(imgs).length) },
+          { name: 'plan-de-montage.txt', data: Montage.planText(story, audio, montage, imgs) },
+          { name: 'plan-de-montage.csv', data: Montage.planCSV(story, audio, montage, imgs) },
+          { name: 'sous-titres.srt', data: AudioScript.toSRT(cues) },
+          { name: 'script-audio.txt', data: AudioScript.toText(story, audio) },
+          { name: 'prompts-images.txt', data: Montage.promptsText(story, montage) },
+          { name: 'montage.json', data: JSON.stringify(Montage.toJSON(story, audio, montage, imgs), null, 2) }
+        ];
+        var jobs = montage.scenes.map(function (scn, i) {
+          var im = mUI.images[scn.scene];
+          if (!im) return null;
+          return im.blob.arrayBuffer().then(function (buf) { files.push({ name: Montage.imageName(scn, i, im.ext), data: new Uint8Array(buf) }); });
+        }).filter(Boolean);
+        Promise.all(jobs).then(function () {
+          var zip = Zip.create(files);
+          var url = URL.createObjectURL(zip);
+          var a = h('a', { href: url, download: base + '-montage.zip', class: 'sr-only' });
+          document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(function () { URL.revokeObjectURL(url); }, 10000);
+          toast('Pack « ' + base + '-montage.zip » prêt (' + files.length + ' fichiers)');
+        }, function () { toast('Export impossible'); });
+      } }, [icon('download'), h('span', { text: 'Pack CapCut (.zip)' })]),
+      h('div', { class: 'export-grid' }, [
+        h('button', { type: 'button', class: 'btn btn-ghost', id: 'btn-plan-txt', onclick: function () {
+          downloadFile(base + '-plan-de-montage.txt', 'text/plain;charset=utf-8', Montage.planText(story, audio, montage, imagesForExport()));
+        } }, [icon('download'), h('span', { text: 'Plan .txt' })]),
+        h('button', { type: 'button', class: 'btn btn-ghost', id: 'btn-montage-srt', onclick: function () {
+          downloadFile(base + '.srt', 'application/x-subrip;charset=utf-8', AudioScript.toSRT(cues));
+        } }, [icon('download'), h('span', { text: 'Sous-titres .srt' })])
+      ]),
+      h('button', { type: 'button', class: 'btn btn-ghost btn-block', id: 'btn-copy-plan', onclick: function () {
+        copyText(Montage.planText(story, audio, montage, imagesForExport()));
+      } }, [icon('copy'), h('span', { text: 'Copier le plan de montage' })]),
+      h('p', { class: 'generator-note', text: 'Aucun fichier vidéo (MP4) n’est produit : CapCut sur iPhone n’importe pas de projet de montage externe, l’assemblage se fait à la main en suivant le plan. Les sous-titres .srt peuvent être importés si ta version de CapCut le permet ; sinon, utilise ses légendes automatiques.' })
+    ]));
+
+    nodes.push(h('button', { type: 'button', class: 'btn btn-danger btn-block', onclick: function () {
+      if (!window.confirm('Recréer le montage ? Les réglages de plans (cadrages, mouvements, transitions) seront remplacés. Les images importées sont gardées.')) return;
+      stopPreview();
+      prepareMontage(story, null);
+      mUI.selected = 0; mUI.shown = -1;
+      toast('Montage recréé');
+      rerenderKeepScroll();
+    } }, [icon('sparkle'), h('span', { text: 'Recréer le montage' })]));
+
+    requestAnimationFrame(function () {
+      var tlEl = document.getElementById('timeline');
+      if (tlEl && mUI.tlScroll) tlEl.scrollLeft = mUI.tlScroll;
+      drawFrame(mUI.t);
+      if (mUI.playing) { mUI.from = mUI.t; mUI.t0 = performance.now(); mUI.raf = requestAnimationFrame(loop); }
+    });
+    return nodes;
   }
 
   var ROUTES = {
@@ -1307,7 +1806,8 @@
     personnage: viewCharacterRoute,
     histoires: viewStories,
     histoire: viewStoryEditor,
-    audio: viewAudio
+    audio: viewAudio,
+    montage: viewMontage
   };
 
   function parseRoute() {
@@ -1326,7 +1826,7 @@
     var view = h('div', { class: 'view' }, nodes);
     app.replaceChildren(view);
 
-    var tabName = route.name === 'histoire' || route.name === 'audio' ? 'histoires' : route.name === 'personnage' ? 'personnages' : route.name;
+    var tabName = route.name === 'histoire' || route.name === 'audio' || route.name === 'montage' ? 'histoires' : route.name === 'personnage' ? 'personnages' : route.name;
     document.querySelectorAll('.tab[data-route]').forEach(function (t) {
       var active = t.getAttribute('data-route') === tabName;
       t.classList.toggle('is-active', active);
@@ -1399,6 +1899,8 @@
     if (currentRoute() !== 'personnage') charForm.data = null;
     stopSpeech();
     audioUI.storyId = null;
+    stopPreview();
+    if (currentRoute() !== 'montage') { revokeImages(); mUI.storyId = null; mUI.loadedFor = null; }
     render();
     window.scrollTo(0, 0);
   });

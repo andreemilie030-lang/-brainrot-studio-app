@@ -9,7 +9,7 @@
   var memory = null; // repli si localStorage est indisponible (navigation privée, etc.)
 
   function emptyState() {
-    return { projects: [], videos: [], stories: [], characters: [], audio: [] };
+    return { projects: [], videos: [], stories: [], characters: [], audio: [], montage: [] };
   }
 
   function isValid(s) {
@@ -25,6 +25,7 @@
       if (!Array.isArray(parsed.stories)) parsed.stories = []; // données d'une version précédente
       if (!Array.isArray(parsed.characters)) parsed.characters = [];
       if (!Array.isArray(parsed.audio)) parsed.audio = [];
+      if (!Array.isArray(parsed.montage)) parsed.montage = [];
       return parsed;
     } catch (e) {
       return memory || emptyState();
@@ -120,6 +121,7 @@
       var state = load();
       state.stories = state.stories.filter(function (s) { return s.id !== id; });
       state.audio = state.audio.filter(function (a) { return a.storyId !== id; }); // sa piste audio part avec elle
+      state.montage = state.montage.filter(function (m) { return m.storyId !== id; }); // et son montage
       save(state);
     },
 
@@ -142,6 +144,27 @@
       state.audio = state.audio.filter(function (a) { return a.storyId !== copy.storyId; });
       state.audio.push(copy);
       return { audio: copy, saved: save(state) };
+    },
+
+    /* ----- Montages (un par histoire) ----- */
+
+    getMontage: function (storyId) {
+      var list = load().montage;
+      for (var i = 0; i < list.length; i++) if (list[i].storyId === storyId) return JSON.parse(JSON.stringify(list[i]));
+      return null;
+    },
+
+    montageStoryIds: function () {
+      return load().montage.map(function (m) { return m.storyId; });
+    },
+
+    saveMontage: function (montage) {
+      var state = load();
+      var copy = JSON.parse(JSON.stringify(montage));
+      copy.updatedAt = Date.now();
+      state.montage = state.montage.filter(function (m) { return m.storyId !== copy.storyId; });
+      state.montage.push(copy);
+      return { montage: copy, saved: save(state) };
     },
 
     deleteAudio: function (storyId) {
