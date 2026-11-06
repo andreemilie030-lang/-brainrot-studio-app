@@ -98,7 +98,7 @@
       title: pick(tpl.titles),
       characters: tpl.characters.map(function (ch) {
         var c = cast[ch.key];
-        var out = { key: c.key, name: c.name, role: c.role };
+        var out = { key: c.key, name: c.name, role: c.role, gender: c.gender };
         if (c.libraryId) out.libraryId = c.libraryId;
         return out;
       }),

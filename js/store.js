@@ -9,7 +9,7 @@
   var memory = null; // repli si localStorage est indisponible (navigation privée, etc.)
 
   function emptyState() {
-    return { projects: [], videos: [], stories: [], characters: [] };
+    return { projects: [], videos: [], stories: [], characters: [], audio: [] };
   }
 
   function isValid(s) {
@@ -24,6 +24,7 @@
       if (!isValid(parsed)) return emptyState();
       if (!Array.isArray(parsed.stories)) parsed.stories = []; // données d'une version précédente
       if (!Array.isArray(parsed.characters)) parsed.characters = [];
+      if (!Array.isArray(parsed.audio)) parsed.audio = [];
       return parsed;
     } catch (e) {
       return memory || emptyState();
@@ -118,6 +119,34 @@
     deleteStory: function (id) {
       var state = load();
       state.stories = state.stories.filter(function (s) { return s.id !== id; });
+      state.audio = state.audio.filter(function (a) { return a.storyId !== id; }); // sa piste audio part avec elle
+      save(state);
+    },
+
+    /* ----- Pistes audio (une par histoire) ----- */
+
+    getAudio: function (storyId) {
+      var list = load().audio;
+      for (var i = 0; i < list.length; i++) if (list[i].storyId === storyId) return JSON.parse(JSON.stringify(list[i]));
+      return null;
+    },
+
+    audioStoryIds: function () {
+      return load().audio.map(function (a) { return a.storyId; });
+    },
+
+    saveAudio: function (audio) {
+      var state = load();
+      var copy = JSON.parse(JSON.stringify(audio));
+      copy.updatedAt = Date.now();
+      state.audio = state.audio.filter(function (a) { return a.storyId !== copy.storyId; });
+      state.audio.push(copy);
+      return { audio: copy, saved: save(state) };
+    },
+
+    deleteAudio: function (storyId) {
+      var state = load();
+      state.audio = state.audio.filter(function (a) { return a.storyId !== storyId; });
       save(state);
     },
 

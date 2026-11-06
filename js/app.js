@@ -48,7 +48,11 @@
     pencil: ['M4 20h4L19 9l-4-4L4 16z', 'M13.5 6.5l4 4'],
     save: ['M5 4h11l3 3v13H5z', 'M8 4v5h7V4', 'M8 20v-6h8v6'],
     copy: ['M9 9h11v11H9z', 'M5 15H4V4h11v1'],
-    image: ['M4 5h16v14H4z', 'M4 16l4.5-4.5 4 4 3-3L20 17', 'M15.5 9h.01']
+    image: ['M4 5h16v14H4z', 'M4 16l4.5-4.5 4 4 3-3L20 17', 'M15.5 9h.01'],
+    mic: ['M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3z', 'M5 11a7 7 0 0 0 14 0', 'M12 18v3'],
+    play: ['M7 4.5l12 7.5-12 7.5z'],
+    stop: ['M6.5 6.5h11v11h-11z'],
+    download: ['M12 4v11', 'M7 10l5 5 5-5', 'M5 20h14']
   };
 
   function icon(name) {
@@ -200,6 +204,9 @@
           'Disponible'),
         moduleCard('#/histoires', 'book', 'Générateur d’histoires',
           Store.stories().length ? Store.stories().length + ' histoire' + (Store.stories().length > 1 ? 's sauvegardées' : ' sauvegardée') : 'Histoires de 60 à 90 s, prêtes à tourner.',
+          'Disponible'),
+        moduleCard('#/audio', 'mic', 'Studio audio',
+          Store.audioStoryIds().length ? Store.audioStoryIds().length + ' piste' + (Store.audioStoryIds().length > 1 ? 's audio prêtes' : ' audio prête') : 'Voix, bruitages et sous-titres synchronisés.',
           'Disponible')
       ])
     ]);
@@ -585,6 +592,8 @@
         sectionHeader('Fin surprenante'),
         textarea(st.ending, 'Fin', function (v) { st.ending = v; changed(); }, 'textarea-ending')
       ]),
+      st.id ? h('a', { class: 'btn btn-ghost btn-block', href: '#/audio/' + encodeURIComponent(st.id), id: 'btn-open-audio' },
+        [icon('mic'), h('span', { text: 'Studio audio de cette histoire' })]) : null,
       del,
       actions
     ];
@@ -833,13 +842,472 @@
     return viewCharacterSheet(param);
   }
 
+
+  /* ---------- Synthèse vocale de l'appareil (Web Speech API) ---------- */
+  // Gratuite, sans compte ni carte : c'est la voix intégrée au système (iPhone : Safari).
+
+  var tts = {
+    supported: typeof window.speechSynthesis !== 'undefined' && typeof window.SpeechSynthesisUtterance !== 'undefined',
+    voices: [],
+    playing: false,
+    token: 0,
+    current: null
+  };
+
+  function loadVoices() {
+    if (!tts.supported) return;
+    var all = window.speechSynthesis.getVoices() || [];
+    tts.voices = all.filter(function (v) { return /^fr/i.test(v.lang); });
+  }
+  if (tts.supported) {
+    loadVoices();
+    window.speechSynthesis.addEventListener && window.speechSynthesis.addEventListener('voiceschanged', function () {
+      var before = tts.voices.length;
+      loadVoices();
+      if (tts.voices.length !== before && currentRoute() === 'audio' && !tts.playing) rerenderKeepScroll();
+    });
+  }
+
+  function voiceFor(uri) {
+    for (var i = 0; i < tts.voices.length; i++) if (tts.voices[i].voiceURI === uri) return tts.voices[i];
+    return tts.voices[0] || null;
+  }
+
+  function voiceLabel(uri) {
+    var v = voiceFor(uri);
+    return v ? v.name + ' (' + v.lang + ')' : 'Voix française par défaut de l’appareil';
+  }
+
+  /** Dit un texte. Appelle done({ ok, start, end }) une seule fois. */
+  function speak(text, settings, onStart, done) {
+    var my = tts.token;
+    var finished = false, started = null;
+    var u = new window.SpeechSynthesisUtterance(text);
+    var v = voiceFor(settings && settings.voiceURI);
+    if (v) u.voice = v;
+    u.lang = v ? v.lang : 'fr-FR';
+    u.rate = settings && settings.rate || 1;
+    u.pitch = settings && settings.pitch || 1;
+    // Filet de sécurité : sur certains iPhone, la fin de lecture n'est pas toujours signalée.
+    var limit = setTimeout(function () { finish(false); }, (text.split(/\s+/).length / (2.5 * u.rate) + 6) * 1000);
+    function finish(ok) {
+      if (finished) return;
+      finished = true;
+      clearTimeout(limit);
+      if (my === tts.token) done({ ok: ok, start: started, end: performance.now() });
+    }
+    u.onstart = function () { started = performance.now(); if (onStart && my === tts.token) onStart(); };
+    u.onend = function () { finish(started !== null); };
+    u.onerror = function () { finish(false); };
+    tts.current = u; // garde une référence (sinon Safari peut l'oublier en cours de lecture)
+    window.speechSynthesis.speak(u);
+  }
+
+  function stopSpeech() {
+    tts.token += 1;
+    tts.playing = false;
+    if (tts.supported) window.speechSynthesis.cancel();
+    var btn = document.getElementById('btn-play-all');
+    if (btn) setPlayButton(btn, false);
+    var cap = document.getElementById('caption');
+    if (cap) cap.classList.remove('is-live');
+    document.querySelectorAll('.seg.is-current').forEach(function (e) { e.classList.remove('is-current'); });
+  }
+
+  window.addEventListener('pagehide', stopSpeech);
+
+  /* ---------- Studio audio ---------- */
+
+  var audioUI = { storyId: null, data: null };
+
+  function slug(t) {
+    return String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'histoire';
+  }
+
+  function downloadFile(name, mime, content) {
+    var blob = new Blob([content], { type: mime });
+    var url = URL.createObjectURL(blob);
+    var a = h('a', { href: url, download: name, class: 'sr-only' });
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
+    toast('Fichier « ' + name + ' » prêt');
+  }
+
+  function speakerKeys(story) {
+    return [AudioScript.NARRATOR].concat(story.characters.map(function (c) { return c.key; }));
+  }
+
+  function characterGender(c) {
+    if (c.gender) return c.gender;
+    if (c.libraryId) { var lib = Store.getCharacter(c.libraryId); if (lib) return lib.gender; }
+    return null;
+  }
+
+  function voiceNotes(story) {
+    var notes = {};
+    story.characters.forEach(function (c) {
+      var lib = c.libraryId && Store.getCharacter(c.libraryId);
+      if (lib && lib.voice) notes[c.key] = lib.voice;
+    });
+    return notes;
+  }
+
+  function buildAudio(story) {
+    var built = AudioScript.build(story, voiceNotes(story));
+    var voices = {};
+    voices[AudioScript.NARRATOR] = { voiceURI: '', rate: 1, pitch: 1 };
+    var spare = [0.92, 1.15, 1.05];
+    story.characters.forEach(function (c, i) {
+      var g = characterGender(c);
+      voices[c.key] = { voiceURI: '', rate: 1, pitch: g === 'f' ? 1.2 : g === 'm' ? 0.85 : spare[i % spare.length] };
+    });
+    // Si l'appareil propose plusieurs voix françaises, chaque rôle en reçoit une différente.
+    if (tts.voices.length > 1) {
+      speakerKeys(story).forEach(function (k, i) { voices[k].voiceURI = tts.voices[i % tts.voices.length].voiceURI; });
+    }
+    var audio = { storyId: story.id, storyUpdatedAt: story.updatedAt, createdAt: Date.now(),
+      segments: built.segments, ambiance: built.ambiance, voices: voices };
+    AudioScript.timeline(audio.segments, audio.voices);
+    return audio;
+  }
+
+  function saveAudio() {
+    AudioScript.timeline(audioUI.data.segments, audioUI.data.voices);
+    var res = Store.saveAudio(audioUI.data);
+    if (!res.saved) toast('Enregistrement impossible : stockage bloqué');
+  }
+
+  function clearMeasures() {
+    var had = audioUI.data.segments.some(function (s) { return s.measured; });
+    audioUI.data.segments.forEach(function (s) { delete s.measured; });
+    return had;
+  }
+
+  function setPlayButton(btn, playing) {
+    btn.replaceChildren(icon(playing ? 'stop' : 'play'), h('span', { text: playing ? 'Arrêter' : 'Écouter toute la piste' }));
+    btn.classList.toggle('is-playing', playing);
+  }
+
+  function showCaption(story, seg, sfxList) {
+    var cap = document.getElementById('caption');
+    if (!cap) return;
+    var names = AudioScript.namesOf(story);
+    cap.classList.add('is-live');
+    var parts = [
+      h('p', { class: 'caption-who', text: names[seg.speaker] || seg.speaker }),
+      h('p', { class: 'caption-text', text: seg.text })
+    ];
+    if (sfxList.length) parts.push(h('p', { class: 'caption-sfx', text: 'Bruitage : ' + sfxList.map(function (x) { return x.text; }).join(' + ') }));
+    cap.replaceChildren.apply(cap, parts);
+    document.querySelectorAll('.seg.is-current').forEach(function (e) { e.classList.remove('is-current'); });
+    var el = document.getElementById('seg-' + seg.id);
+    if (el) el.classList.add('is-current');
+  }
+
+  function playAll(story) {
+    var audio = audioUI.data;
+    var list = audio.segments.filter(AudioScript.isSpoken);
+    if (!list.length) return;
+    stopSpeech();
+    tts.playing = true;
+    var btn = document.getElementById('btn-play-all');
+    if (btn) setPlayButton(btn, true);
+    var t0 = null, results = [], i = 0;
+    function next() {
+      if (i >= list.length) return complete();
+      var seg = list[i];
+      var fx = audio.segments.filter(function (s) { return s.kind === 'sfx' && s.anchor === seg.id; });
+      speak(seg.text, audio.voices[seg.speaker], function () {
+        if (t0 === null) t0 = performance.now();
+        showCaption(story, seg, fx);
+      }, function (r) {
+        results.push(r);
+        i += 1;
+        next();
+      });
+    }
+    function complete() {
+      var valid = results.length === list.length && t0 !== null && results.every(function (r) { return r.ok && r.end - r.start > 100; });
+      stopSpeech();
+      if (valid) {
+        list.forEach(function (seg, k) {
+          seg.measured = { start: (results[k].start - t0) / 1000, end: (results[k].end - t0) / 1000 };
+        });
+        saveAudio();
+        toast('Sous-titres calés sur la voix de ton appareil');
+        rerenderKeepScroll();
+      } else {
+        toast('Lecture terminée');
+      }
+    }
+    next();
+  }
+
+  function viewAudioList() {
+    var stories = Store.stories();
+    var withAudio = Store.audioStoryIds();
+    return [
+      pageHeader('Studio audio'),
+      h('section', { class: 'card generator' }, [
+        h('h2', { class: 'generator-title', text: 'Studio audio' }),
+        h('p', { class: 'generator-text', text: 'Transforme une histoire en piste audio : narration, dialogues par personnage, indications de jeu, bruitages et sous-titres synchronisés, exportables en SRT, WebVTT et JSON.' })
+      ]),
+      h('section', { class: 'section' }, [
+        sectionHeader('Choisis une histoire'),
+        stories.length
+          ? h('div', { class: 'list' }, stories.map(function (st) {
+              var has = withAudio.indexOf(st.id) !== -1;
+              return h('a', { class: 'card story-card', href: '#/audio/' + encodeURIComponent(st.id) }, [
+                h('div', { class: 'module-icon' }, [icon('mic')]),
+                h('div', { class: 'project-info' }, [
+                  h('h3', { class: 'project-title', text: st.title }),
+                  h('p', { class: 'project-meta' }, [
+                    h('span', { class: 'badge badge-genre', text: StoryGen.genreLabel(st.genre) }),
+                    h('span', { class: has ? 'badge badge-ready' : 'badge badge-soon', text: has ? 'Piste prête' : 'Pas de piste' })
+                  ])
+                ]),
+                h('span', { class: 'chev' }, [icon('chevron')])
+              ]);
+            }))
+          : h('div', { class: 'cast-empty' }, [
+              emptyState('mic', 'Aucune histoire sauvegardée', 'Le studio audio part d’une histoire : génère-en une et sauvegarde-la d’abord.'),
+              h('a', { class: 'btn btn-ghost btn-sm', href: '#/histoires' }, [icon('book'), h('span', { text: 'Aller au générateur' })])
+            ])
+      ])
+    ];
+  }
+
+  function viewAudio(storyId) {
+    if (!storyId) return viewAudioList();
+    var story = Store.getStory(storyId);
+    if (!story) return [pageHeader('Studio audio', '#/audio'), emptyState('mic', 'Histoire introuvable', 'Elle a peut-être été supprimée.')];
+    if (audioUI.storyId !== storyId) { audioUI.storyId = storyId; audioUI.data = Store.getAudio(storyId); }
+    var audio = audioUI.data;
+    var head = pageHeader('Studio audio', '#/histoire/' + encodeURIComponent(storyId));
+    var intro = h('div', { class: 'card char-hero' }, [
+      h('div', { class: 'module-icon' }, [icon('mic')]),
+      h('div', { class: 'char-hero-body' }, [
+        h('h2', { class: 'story-title', text: story.title }),
+        h('span', { class: 'badge badge-genre', text: StoryGen.genreLabel(story.genre) })
+      ])
+    ]);
+
+    if (!audio) {
+      return [head, storageWarning(), intro, h('section', { class: 'card generator' }, [
+        h('p', { class: 'generator-text', text: 'Prépare la piste : chaque narration et chaque réplique devient un segment avec son indication de jeu, les bruitages sont repérés dans le texte, et les sous-titres sont calés dans le temps.' }),
+        h('button', { type: 'button', class: 'btn btn-primary btn-block', id: 'btn-build-audio', onclick: function () {
+          audioUI.data = buildAudio(story);
+          saveAudio();
+          toast('Piste audio prête');
+          rerenderKeepScroll();
+        } }, [icon('sparkle'), h('span', { text: 'Préparer la piste audio' })])
+      ])];
+    }
+
+    var tl = AudioScript.timeline(audio.segments, audio.voices);
+    var names = AudioScript.namesOf(story);
+    var cues = AudioScript.subtitles(audio.segments, names);
+    var spokenCount = audio.segments.filter(AudioScript.isSpoken).length;
+    var sfxCount = audio.segments.length - spokenCount;
+    var roles = {};
+    story.characters.forEach(function (c) { roles[c.key] = c.role; });
+    var stale = story.updatedAt > (audio.storyUpdatedAt || 0);
+
+    function rebuild(keepVoices) {
+      stopSpeech();
+      var oldVoices = audio.voices;
+      audioUI.data = buildAudio(story);
+      if (keepVoices) Object.keys(oldVoices).forEach(function (k) { if (audioUI.data.voices[k]) audioUI.data.voices[k] = oldVoices[k]; });
+      saveAudio();
+      toast('Piste recréée depuis l’histoire');
+      rerenderKeepScroll();
+    }
+
+    var nodes = [head, storageWarning(), intro];
+
+    if (stale) {
+      nodes.push(h('div', { class: 'warning warning-action' }, [
+        h('p', { text: 'L’histoire a été modifiée après la création de cette piste. Mets la piste à jour pour reprendre les nouveaux textes : tes réglages de voix sont gardés, les indications et bruitages sont recalculés.' }),
+        h('button', { type: 'button', class: 'btn btn-ghost btn-sm', id: 'btn-refresh-audio', onclick: function () { rebuild(true); } }, ['Mettre à jour la piste'])
+      ]));
+    }
+
+    nodes.push(h('section', { class: 'stats stats-4', 'aria-label': 'Résumé de la piste' }, [
+      statTile(AudioScript.short(tl.total).replace(/^0(\d):/, '$1:'), 'Durée'),
+      statTile(String(spokenCount), 'Segments de voix'),
+      statTile(String(sfxCount), 'Bruitages'),
+      statTile(String(cues.length), 'Sous-titres')
+    ]));
+
+    // Lecteur
+    var playBtn = h('button', { type: 'button', class: 'btn btn-primary btn-block', id: 'btn-play-all', disabled: !tts.supported, onclick: function () {
+      if (tts.playing) stopSpeech(); else playAll(story);
+    } });
+    setPlayButton(playBtn, tts.playing);
+    nodes.push(h('section', { class: 'card player' }, [
+      h('div', { class: 'player-head' }, [
+        h('p', { class: 'story-label', text: 'Écoute' }),
+        h('span', { class: 'badge ' + (tl.source === 'mesuré' ? 'badge-time is-ok' : 'badge-soon'), id: 'timing-badge',
+          text: tl.source === 'mesuré' ? 'Minutage mesuré sur la voix' : 'Minutage estimé' })
+      ]),
+      h('div', { class: 'caption', id: 'caption' }, [h('p', { class: 'caption-text muted', text: tts.supported ? 'Le sous-titre s’affichera ici pendant la lecture.' : 'La synthèse vocale n’est pas disponible sur ce navigateur.' })]),
+      playBtn,
+      h('p', { class: 'generator-note', text: tts.supported
+        ? 'Voix de synthèse intégrée à ton appareil : gratuite, sans compte, sans connexion. ' +
+          (tts.voices.length ? tts.voices.length + ' voix française' + (tts.voices.length > 1 ? 's disponibles' : ' disponible') + '. ' : 'Aucune voix française listée pour l’instant : la voix par défaut sera utilisée. ') +
+          'Une écoute complète cale automatiquement les sous-titres sur la vraie voix. Les bruitages s’affichent mais ne sont pas joués (ce sont des repères). Si tu n’entends rien, vérifie le volume et le mode silencieux.'
+        : 'Les données (script, bruitages, sous-titres) restent utilisables et exportables.' })
+    ]));
+
+    // Voix par personnage
+    nodes.push(h('section', { class: 'section' }, [
+      sectionHeader('Voix'),
+      h('p', { class: 'hint', text: 'Choisis une voix, sa vitesse et sa hauteur pour chaque rôle. Changer un réglage refait l’estimation du minutage.' }),
+      h('div', { class: 'list' }, speakerKeys(story).map(function (k) {
+        var v = audio.voices[k] || (audio.voices[k] = { voiceURI: '', rate: 1, pitch: 1 });
+        var note = voiceNotes(story)[k];
+        function changed() {
+          stopSpeech();
+          var had = clearMeasures();
+          saveAudio();
+          if (had) toast('Réglage changé : minutage repassé en estimation');
+          rerenderKeepScroll();
+        }
+        var sel = h('select', { class: 'input', 'aria-label': 'Voix de ' + names[k] }, [h('option', { value: '', text: 'Voix par défaut de l’appareil' })].concat(
+          tts.voices.map(function (vo) { var o = h('option', { value: vo.voiceURI, text: vo.name + ' (' + vo.lang + ')' }); if (vo.voiceURI === v.voiceURI) o.selected = true; return o; })));
+        sel.addEventListener('change', function () { v.voiceURI = sel.value; changed(); });
+        function slider(label, key, min, max) {
+          var out = h('span', { class: 'range-val', text: v[key].toFixed(2) });
+          var r = h('input', { type: 'range', class: 'range', min: String(min), max: String(max), step: '0.05', 'aria-label': label + ' de ' + names[k] });
+          r.value = String(v[key]);
+          r.addEventListener('input', function () { out.textContent = Number(r.value).toFixed(2); });
+          r.addEventListener('change', function () { v[key] = Number(r.value); changed(); });
+          return h('label', { class: 'range-row' }, [h('span', { class: 'field-label', text: label }), r, out]);
+        }
+        return h('div', { class: 'card voice-card' }, [
+          h('div', { class: 'voice-head' }, [
+            h('div', {}, [h('p', { class: 'cast-name', text: names[k] }), h('p', { class: 'cast-role', text: k === AudioScript.NARRATOR ? 'Narration' : roles[k] || '' })]),
+            h('button', { type: 'button', class: 'btn btn-ghost btn-sm', disabled: !tts.supported, 'aria-label': 'Tester la voix de ' + names[k], onclick: function () {
+              stopSpeech();
+              speak(k === AudioScript.NARRATOR ? 'Voici la voix du narrateur.' : 'Bonjour, je suis ' + names[k] + '.', v, null, function () {});
+            } }, [icon('play'), h('span', { text: 'Tester' })])
+          ]),
+          note ? h('p', { class: 'hint', text: 'Voix décrite dans le studio : ' + note }) : null,
+          sel,
+          slider('Vitesse', 'rate', 0.6, 1.4),
+          slider('Hauteur', 'pitch', 0.5, 1.6)
+        ]);
+      }))
+    ]));
+
+    // Ambiance
+    var amb = h('input', { class: 'input', type: 'text', maxlength: '200', 'aria-label': 'Ambiance sonore', placeholder: 'Ex. : pluie et nappe grave' });
+    amb.value = audio.ambiance || '';
+    amb.addEventListener('change', function () { audio.ambiance = amb.value.trim(); saveAudio(); });
+    nodes.push(h('section', { class: 'section' }, [
+      sectionHeader('Ambiance (tout du long)'),
+      amb
+    ]));
+
+    // Conducteur
+    var sceneCount = story.scenes.length;
+    var groups = {};
+    audio.segments.forEach(function (s) { (groups[s.scene] = groups[s.scene] || []).push(s); });
+    var timelineNodes = Object.keys(groups).map(Number).sort(function (a, b) { return a - b; }).map(function (sc) {
+      var segs = groups[sc].slice().sort(function (a, b) { return a.start - b.start || (a.kind === 'sfx' ? -1 : 1); });
+      var anchorSeg = segs.filter(AudioScript.isSpoken)[0];
+      return h('li', { class: 'card scene-edit' }, [
+        h('p', { class: 'story-label', text: sc === 0 ? 'Hook' : sc > sceneCount ? 'Fin' : 'Scène ' + sc }),
+        h('div', { class: 'segs' }, segs.map(function (s) { return segmentRow(s); })),
+        anchorSeg ? h('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: function () {
+          audio.segments.push({ id: 'fx' + Date.now().toString(36), scene: sc, kind: 'sfx', anchor: anchorSeg.id, text: 'Nouveau bruitage', dur: 1.5 });
+          saveAudio(); rerenderKeepScroll();
+        } }, [icon('plus'), h('span', { text: 'Ajouter un bruitage' })]) : null
+      ]);
+    });
+
+    function segmentRow(s) {
+      var time = h('span', { class: 'seg-time', text: AudioScript.short(s.start) + ' → ' + AudioScript.short(s.end) });
+      if (s.kind === 'sfx') {
+        var fx = h('input', { class: 'input input-sm', type: 'text', maxlength: '120', 'aria-label': 'Description du bruitage' });
+        fx.value = s.text;
+        fx.addEventListener('change', function () { s.text = fx.value.trim() || 'Bruitage'; saveAudio(); });
+        return h('div', { class: 'seg seg-sfx', id: 'seg-' + s.id }, [
+          h('div', { class: 'seg-head' }, [h('span', { class: 'badge badge-sfx', text: 'Bruitage' }), time,
+            h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Supprimer le bruitage', onclick: function () {
+              audio.segments = audio.segments.filter(function (x) { return x.id !== s.id; });
+              saveAudio(); rerenderKeepScroll();
+            } }, [icon('trash')])]),
+          fx
+        ]);
+      }
+      var dir = textarea(s.direction, 'Indication de jeu', function (v) { s.direction = v; });
+      dir.addEventListener('change', saveAudio);
+      return h('div', { class: 'seg', id: 'seg-' + s.id }, [
+        h('div', { class: 'seg-head' }, [
+          h('span', { class: 'badge ' + (s.kind === 'dialogue' ? 'badge-ready' : 'badge-genre'), text: names[s.speaker] || s.speaker }),
+          time,
+          h('button', { type: 'button', class: 'icon-btn', disabled: !tts.supported, 'aria-label': 'Écouter ce segment', onclick: function () {
+            stopSpeech();
+            speak(s.text, audio.voices[s.speaker], null, function () {});
+          } }, [icon('play')])
+        ]),
+        h('p', { class: 'seg-text', text: s.text }),
+        h('label', { class: 'field' }, [h('span', { class: 'field-label', text: 'Indication de jeu' }), dir])
+      ]);
+    }
+
+    nodes.push(h('section', { class: 'section' }, [
+      sectionHeader('Conducteur'),
+      h('p', { class: 'hint', text: 'Les textes viennent de l’histoire (modifie-les dans l’éditeur d’histoire). Ici, tu règles les indications de jeu et les bruitages.' }),
+      h('ol', { class: 'scenes-edit' }, timelineNodes)
+    ]));
+
+    // Exports
+    var base = slug(story.title);
+    function labels() { var l = {}; speakerKeys(story).forEach(function (k) { l[k] = voiceLabel(audio.voices[k] && audio.voices[k].voiceURI); }); return l; }
+    nodes.push(h('section', { class: 'section' }, [
+      sectionHeader('Exporter'),
+      h('p', { class: 'hint', text: 'Fichiers texte standards, à enregistrer dans Fichiers puis importer dans ton logiciel de montage.' }),
+      h('div', { class: 'export-grid' }, [
+        h('button', { type: 'button', class: 'btn btn-ghost', id: 'btn-srt', onclick: function () {
+          downloadFile(base + '.srt', 'application/x-subrip;charset=utf-8', AudioScript.toSRT(AudioScript.subtitles(audio.segments, names)));
+        } }, [icon('download'), h('span', { text: 'Sous-titres .srt' })]),
+        h('button', { type: 'button', class: 'btn btn-ghost', id: 'btn-vtt', onclick: function () {
+          downloadFile(base + '.vtt', 'text/vtt;charset=utf-8', AudioScript.toVTT(AudioScript.subtitles(audio.segments, names)));
+        } }, [icon('download'), h('span', { text: 'Sous-titres .vtt' })]),
+        h('button', { type: 'button', class: 'btn btn-ghost', id: 'btn-json', onclick: function () {
+          downloadFile(base + '-audio.json', 'application/json;charset=utf-8', JSON.stringify(AudioScript.exportJSON(story, audio, labels()), null, 2));
+        } }, [icon('download'), h('span', { text: 'Données .json' })]),
+        h('button', { type: 'button', class: 'btn btn-ghost', id: 'btn-copy-audio', onclick: function () { copyText(AudioScript.toText(story, audio)); } },
+          [icon('copy'), h('span', { text: 'Copier le script' })])
+      ]),
+      h('p', { class: 'generator-note', text: 'Le navigateur ne permet pas d’enregistrer la voix de synthèse dans un fichier audio. Pour garder le son, tu peux essayer l’enregistrement d’écran de l’iPhone (avec le micro coupé) pendant une écoute complète.' })
+    ]));
+
+    nodes.push(h('button', { type: 'button', class: 'btn btn-danger btn-block', onclick: function () {
+      if (!window.confirm('Recréer la piste depuis l’histoire ? Tes indications de jeu, bruitages et réglages de voix seront remplacés.')) return;
+      rebuild(false);
+    } }, [icon('sparkle'), h('span', { text: 'Recréer la piste depuis l’histoire' })]));
+
+    return nodes;
+  }
+
+  function statTile(value, label) {
+    return h('div', { class: 'card stat' }, [h('p', { class: 'stat-value', text: value }), h('p', { class: 'stat-label', text: label })]);
+  }
+
   var ROUTES = {
     accueil: viewHome,
     projets: viewProjects,
     personnages: viewCharacters,
     personnage: viewCharacterRoute,
     histoires: viewStories,
-    histoire: viewStoryEditor
+    histoire: viewStoryEditor,
+    audio: viewAudio
   };
 
   function parseRoute() {
@@ -858,7 +1326,7 @@
     var view = h('div', { class: 'view' }, nodes);
     app.replaceChildren(view);
 
-    var tabName = route.name === 'histoire' ? 'histoires' : route.name === 'personnage' ? 'personnages' : route.name;
+    var tabName = route.name === 'histoire' || route.name === 'audio' ? 'histoires' : route.name === 'personnage' ? 'personnages' : route.name;
     document.querySelectorAll('.tab[data-route]').forEach(function (t) {
       var active = t.getAttribute('data-route') === tabName;
       t.classList.toggle('is-active', active);
@@ -929,6 +1397,8 @@
     }
     if (currentRoute() !== 'histoire') editor.story = null;
     if (currentRoute() !== 'personnage') charForm.data = null;
+    stopSpeech();
+    audioUI.storyId = null;
     render();
     window.scrollTo(0, 0);
   });

@@ -15,9 +15,26 @@ Studio de création de vidéos, pensé pour l'iPhone.
   vêtements, personnalité, voix, histoire), fiche descriptive détaillée, prompt d'image 3D
   cinématographique réaliste (avec prompt négatif) à copier, sauvegarde et modification.
   Les personnages peuvent jouer dans plusieurs histoires (épisodes) : la fiche liste leurs épisodes.
+- **Studio audio** : à partir d'une histoire, piste avec narration et dialogues par personnage,
+  indications de jeu vocal, bruitages repérés dans le texte, ambiance, sous-titres synchronisés.
+  Écoute avec la synthèse vocale de l'appareil (voix, vitesse et hauteur par rôle) ; une écoute
+  complète cale le minutage sur la vraie voix. Exports : sous-titres `.srt` et `.vtt`, données `.json`,
+  script audio texte.
 - **Navigation** en bas de l'écran, style iPhone.
 
 Module annoncé mais **pas encore disponible** : étapes de production vidéo.
+
+### Synthèse vocale : ce qui est vraiment gratuit
+
+La voix utilise la **Web Speech API**, c'est-à-dire la synthèse vocale intégrée au système
+(sur iPhone, celle de Safari) : gratuite, sans compte, sans carte bancaire, hors ligne.
+Limites : la qualité et le nombre de voix françaises dépendent de l'appareil, et le navigateur
+**ne permet pas d'enregistrer cette voix dans un fichier audio**. Les bruitages sont des repères
+(description + minutage), pas des sons joués. Le minutage est estimé (2,5 mots par seconde)
+tant qu'aucune écoute complète n'a été mesurée.
+
+Le format JSON exporté (`brainrot-studio/audio`, version 1) contient : `speakers`, `voiceTrack`
+(segments avec début, fin, personnage, texte, indication), `sfxTrack`, `ambiance` et `subtitles`.
 
 ### Prompt d'image : pas de génération intégrée
 
