@@ -11,16 +11,26 @@ Studio de création de vidéos, pensé pour l'iPhone.
   narration, dialogues, 6 à 8 scènes, fin surprenante) dans 5 genres : horreur, mystère, surnaturel,
   trahison, humour noir. Modification complète (titre, personnages, scènes, répliques), sauvegarde,
   suppression et copie du script.
+- **Studio de personnages** : personnages anthropomorphes (nom, pronom, espèce, apparence physique,
+  vêtements, personnalité, voix, histoire), fiche descriptive détaillée, prompt d'image 3D
+  cinématographique réaliste (avec prompt négatif) à copier, sauvegarde et modification.
+  Les personnages peuvent jouer dans plusieurs histoires (épisodes) : la fiche liste leurs épisodes.
 - **Navigation** en bas de l'écran, style iPhone.
 
-Modules annoncés mais **pas encore disponibles** (marqués « À venir » dans l'appli) :
-bibliothèque de personnages, étapes de production vidéo.
+Module annoncé mais **pas encore disponible** : étapes de production vidéo.
+
+### Prompt d'image : pas de génération intégrée
+
+L'appli **ne génère pas d'image**. Aucun service gratuit, fiable et utilisable sans compte ne
+peut être garanti, et l'intégrer enverrait les descriptions des personnages à un tiers.
+Le prompt (en français, dans `js/character-prompt.js`) se copie en un geste pour être collé
+dans l'outil de génération d'image de son choix.
 
 ### Comment fonctionne le générateur
 
 Il n'utilise **aucune IA en ligne** (donc aucun coût). Il assemble, sur l'appareil, l'une des
-15 trames originales (3 par genre, dans `js/story-data.js`) avec des personnages tirés au hasard,
-en accordant le texte au masculin ou au féminin. La durée est estimée à 2,5 mots par seconde
+15 trames originales (3 par genre, dans `js/story-data.js`) avec des personnages tirés au hasard
+(ou jusqu'à 3 personnages du studio, placés dans les rôles libres de la trame), en accordant le texte au masculin ou au féminin. La durée est estimée à 2,5 mots par seconde
 (débit moyen d'une voix off). Pour ajouter des histoires, il suffit d'ajouter des trames dans ce fichier.
 
 ## Technique

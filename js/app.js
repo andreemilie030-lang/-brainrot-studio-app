@@ -47,7 +47,8 @@
     sparkle: ['M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z', 'M19 16l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z'],
     pencil: ['M4 20h4L19 9l-4-4L4 16z', 'M13.5 6.5l4 4'],
     save: ['M5 4h11l3 3v13H5z', 'M8 4v5h7V4', 'M8 20v-6h8v6'],
-    copy: ['M9 9h11v11H9z', 'M5 15H4V4h11v1']
+    copy: ['M9 9h11v11H9z', 'M5 15H4V4h11v1'],
+    image: ['M4 5h16v14H4z', 'M4 16l4.5-4.5 4 4 3-3L20 17', 'M15.5 9h.01']
   };
 
   function icon(name) {
@@ -194,7 +195,9 @@
     var modules = h('section', { class: 'section' }, [
       sectionHeader('Outils du studio'),
       h('div', { class: 'list' }, [
-        moduleCard('#/personnages', 'user', 'Bibliothèque de personnages', 'Crée et retrouve tes personnages.'),
+        moduleCard('#/personnages', 'user', 'Studio de personnages',
+          Store.characters().length ? Store.characters().length + ' personnage' + (Store.characters().length > 1 ? 's' : '') + ' dans ta bibliothèque' : 'Crée tes personnages et leur prompt d’image 3D.',
+          'Disponible'),
         moduleCard('#/histoires', 'book', 'Générateur d’histoires',
           Store.stories().length ? Store.stories().length + ' histoire' + (Store.stories().length > 1 ? 's sauvegardées' : ' sauvegardée') : 'Histoires de 60 à 90 s, prêtes à tourner.',
           'Disponible')
@@ -225,23 +228,9 @@
     ];
   }
 
-  function viewSoon(title, iconName, text, items) {
-    return [
-      pageHeader(title),
-      h('div', { class: 'card soon' }, [
-        h('div', { class: 'soon-icon' }, [icon(iconName)]),
-        h('span', { class: 'badge badge-soon', text: 'En développement' }),
-        h('p', { class: 'soon-text', text: text }),
-        h('p', { class: 'soon-sub', text: 'Ce module n’est pas encore disponible. Prévu :' }),
-        h('ul', { class: 'soon-list' }, items.map(function (i) { return h('li', { text: i }); }))
-      ])
-    ];
-  }
-
-
   /* ---------- Générateur d'histoires ---------- */
 
-  var gen = { genre: null, draft: null, recent: [] };
+  var gen = { genre: null, draft: null, recent: [], cast: [] };
   var editor = { story: null, dirty: false, hash: '' };
 
   function autoGrow(t) {
@@ -297,7 +286,7 @@
       h('h2', { class: 'story-title', text: story.title }),
       h('ul', { class: 'cast' }, story.characters.map(function (c) {
         return h('li', { class: 'cast-item' }, [
-          h('span', { class: 'cast-name', text: c.name }),
+          h('span', { class: 'cast-name' }, [c.name, c.libraryId ? h('span', { class: 'cast-lib', text: 'Studio' }) : null]),
           c.role ? h('span', { class: 'cast-role', text: c.role }) : null
         ]);
       })),
@@ -325,12 +314,41 @@
   }
 
   function generateDraft() {
-    gen.draft = StoryGen.generate(gen.genre, gen.recent);
+    var picked = gen.cast.map(Store.getCharacter).filter(Boolean);
+    gen.draft = StoryGen.generate(gen.genre, gen.recent, picked);
+    var placed = StoryGen.placedCount(gen.draft);
+    if (placed < picked.length) {
+      var missing = picked.length - placed;
+      toast(missing + ' personnage' + (missing > 1 ? 's n’ont' : ' n’a') + ' pas trouvé de rôle dans ce genre');
+    }
     gen.recent.push(gen.draft.templateId);
     if (gen.recent.length > 6) gen.recent.shift();
   }
 
   function viewStories() {
+
+    var library = Store.characters();
+    gen.cast = gen.cast.filter(function (id) { return library.some(function (c) { return c.id === id; }); });
+    var castPicker = library.length
+      ? h('div', { class: 'field' }, [
+          h('span', { class: 'field-label', text: 'Faire jouer mes personnages (3 maximum)' }),
+          h('div', { class: 'chips', role: 'group', 'aria-label': 'Mes personnages' }, library.map(function (c) {
+            var on = gen.cast.indexOf(c.id) !== -1;
+            return h('button', {
+              type: 'button', class: 'chip chip-cast' + (on ? ' is-active' : ''), 'aria-pressed': on ? 'true' : 'false',
+              onclick: function () {
+                if (on) gen.cast = gen.cast.filter(function (x) { return x !== c.id; });
+                else if (gen.cast.length >= 3) { toast('3 personnages maximum par histoire'); return; }
+                else gen.cast.push(c.id);
+                render();
+              }
+            }, [c.name]);
+          }))
+        ])
+      : h('div', { class: 'cast-empty' }, [
+          h('p', { class: 'generator-note', text: 'Astuce : crée tes propres personnages pour les faire jouer dans tes histoires.' }),
+          h('a', { class: 'btn btn-ghost btn-sm', href: '#/personnage/nouveau' }, [icon('user'), h('span', { text: 'Créer un personnage' })])
+        ]);
     var chips = [{ id: null, label: 'Au hasard' }].concat(StoryGen.GENRES).map(function (g) {
       var active = gen.genre === g.id;
       return h('button', {
@@ -343,12 +361,13 @@
       h('h2', { class: 'generator-title', text: 'Générer une histoire' }),
       h('p', { class: 'generator-text', text: 'Une histoire courte de 60 à 90 secondes : un hook, 2 à 3 personnages, des dialogues, 6 à 8 scènes et une fin surprenante.' }),
       h('div', { class: 'chips', role: 'group', 'aria-label': 'Genre' }, chips),
+      castPicker,
       h('button', {
         type: 'button', class: 'btn btn-primary btn-block', id: 'btn-generate',
         onclick: function () { generateDraft(); render(); scrollToId('draft'); }
       }, [icon('sparkle'), h('span', { text: gen.draft ? 'Générer une autre histoire' : 'Générer une histoire' })]),
       h('p', { class: 'generator-note', text: 'Fonctionne sans connexion et gratuitement : l’histoire est assemblée sur ton iPhone à partir de ' +
-        StoryGen.templateCount(gen.genre) + ' trames originales' + (gen.genre ? ' de ce genre' : '') + ', avec des personnages tirés au hasard.' })
+        StoryGen.templateCount(gen.genre) + ' trames originales' + (gen.genre ? ' de ce genre' : '') + ', avec ' + (gen.cast.length ? 'tes personnages et ' : '') + 'des personnages tirés au hasard.' })
     ]);
 
     var draftSection = null;
@@ -577,14 +596,248 @@
     window.scrollTo(0, y);
   }
 
+
+  /* ---------- Studio de personnages ---------- */
+
+  var charForm = { data: null, dirty: false, hash: '' };
+
+  var CHAR_FIELDS = [
+    { key: 'appearance', label: 'Apparence physique', hint: 'Taille, silhouette, couleur du pelage ou de la peau, yeux, signes distinctifs.',
+      placeholder: 'Ex. : grand et maigre, pelage roux usé, une oreille déchirée, yeux jaunes perçants, cicatrice sur le museau.' },
+    { key: 'outfit', label: 'Vêtements', hint: 'Tenue, accessoires, couleurs, état des vêtements.',
+      placeholder: 'Ex. : long manteau noir trempé de pluie, chemise blanche froissée, montre à gousset en argent.' },
+    { key: 'personality', label: 'Personnalité', hint: 'Caractère, manies, ce qui le rend unique.',
+      placeholder: 'Ex. : calme en apparence, sarcastique, ment très bien, ne supporte pas le silence.' },
+    { key: 'voice', label: 'Voix', hint: 'Timbre, débit, accent, tics de langage. Utile pour choisir la voix off.',
+      placeholder: 'Ex. : voix grave et rauque, parle lentement, chuchote quand il est en colère.' },
+    { key: 'backstory', label: 'Histoire', hint: 'D’où il vient, ce qu’il cache, ce qu’il veut.',
+      placeholder: 'Ex. : ancien magicien de cirque, il a disparu pendant dix ans. Personne ne sait ce qu’il a fait.' }
+  ];
+
+  function blankCharacter() {
+    return { name: '', gender: 'm', species: '', appearance: '', outfit: '', personality: '', voice: '', backstory: '' };
+  }
+
+  function avatar(c, big) {
+    return h('div', { class: 'avatar' + (big ? ' avatar-xl' : ''), 'aria-hidden': 'true', text: (c.name || '?').charAt(0).toUpperCase() });
+  }
+
+  function episodesLabel(n) { return n + ' épisode' + (n > 1 ? 's' : ''); }
+
+  function viewCharacters() {
+    var list = Store.characters();
+    return [
+      pageHeader('Personnages'),
+      storageWarning(),
+      h('section', { class: 'card generator' }, [
+        h('h2', { class: 'generator-title', text: 'Studio de personnages' }),
+        h('p', { class: 'generator-text', text: 'Crée des personnages anthropomorphes avec leur fiche complète et un prompt d’image 3D, puis fais-les jouer dans tes histoires.' }),
+        h('a', { class: 'btn btn-primary btn-block', href: '#/personnage/nouveau', id: 'btn-new-character' }, [icon('plus'), h('span', { text: 'Créer un personnage' })])
+      ]),
+      h('section', { class: 'section' }, [
+        sectionHeader('Ma bibliothèque' + (list.length ? ' (' + list.length + ')' : '')),
+        list.length
+          ? h('div', { class: 'list' }, list.map(function (c) {
+              var n = Store.storiesWithCharacter(c.id).length;
+              return h('a', { class: 'card story-card char-card', href: '#/personnage/' + encodeURIComponent(c.id) }, [
+                avatar(c),
+                h('div', { class: 'project-info' }, [
+                  h('h3', { class: 'project-title', text: c.name }),
+                  h('p', { class: 'project-meta' }, [
+                    c.species ? h('span', { class: 'badge badge-genre', text: c.species }) : null,
+                    h('span', { text: episodesLabel(n) })
+                  ])
+                ]),
+                h('span', { class: 'chev' }, [icon('chevron')])
+              ]);
+            }))
+          : emptyState('user', 'Aucun personnage', 'Crée ton premier personnage : il pourra ensuite jouer dans plusieurs histoires.')
+      ])
+    ];
+  }
+
+  function promptBox(title, text, id) {
+    return h('div', { class: 'prompt' }, [
+      h('div', { class: 'prompt-head' }, [
+        h('p', { class: 'story-label', text: title }),
+        h('button', { type: 'button', class: 'btn btn-ghost btn-sm', id: id, onclick: function () { copyText(text); } },
+          [icon('copy'), h('span', { text: 'Copier' })])
+      ]),
+      h('p', { class: 'prompt-text', text: text })
+    ]);
+  }
+
+  function viewCharacterSheet(id) {
+    var c = Store.getCharacter(id);
+    if (!c) return [pageHeader('Personnage', '#/personnages'), emptyState('user', 'Personnage introuvable', 'Il a peut-être été supprimé.')];
+    var episodes = Store.storiesWithCharacter(id);
+
+    var sections = [h('div', { class: 'card char-hero' }, [
+      avatar(c, true),
+      h('div', { class: 'char-hero-body' }, [
+        h('h2', { class: 'char-name', text: c.name }),
+        h('p', { class: 'char-sub', text: [c.species || 'Espèce non précisée', c.gender === 'f' ? 'Elle' : 'Il'].join(' · ') }),
+        h('span', { class: 'badge badge-ready', text: episodesLabel(episodes.length) })
+      ])
+    ])];
+
+    CHAR_FIELDS.forEach(function (f) {
+      sections.push(h('section', { class: 'card sheet-block' }, [
+        h('p', { class: 'story-label', text: f.label }),
+        c[f.key] ? h('p', { class: 'story-text pre', text: c[f.key] }) : h('p', { class: 'muted', text: 'Non renseigné.' })
+      ]));
+    });
+
+    sections.push(h('section', { class: 'section' }, [
+      sectionHeader('Épisodes'),
+      episodes.length
+        ? h('div', { class: 'list' }, episodes.map(function (st) {
+            return h('a', { class: 'card story-card', href: '#/histoire/' + encodeURIComponent(st.id) }, [
+              h('div', { class: 'module-icon' }, [icon('book')]),
+              h('div', { class: 'project-info' }, [
+                h('h3', { class: 'project-title', text: st.title }),
+                h('p', { class: 'project-meta' }, [h('span', { class: 'badge badge-genre', text: StoryGen.genreLabel(st.genre) })])
+              ]),
+              h('span', { class: 'chev' }, [icon('chevron')])
+            ]);
+          }))
+        : h('p', { class: 'hint', text: 'Ce personnage n’a encore joué dans aucun épisode sauvegardé.' }),
+      h('button', { type: 'button', class: 'btn btn-ghost btn-block', id: 'btn-cast-character', onclick: function () {
+        gen.cast = [c.id];
+        gen.draft = null;
+        location.hash = '#/histoires';
+      } }, [icon('sparkle'), h('span', { text: 'Faire jouer dans une nouvelle histoire' })])
+    ]));
+
+    sections.push(h('section', { class: 'section' }, [
+      sectionHeader('Prompt image 3D'),
+      h('p', { class: 'hint', text: 'BRAINROT STUDIO ne génère pas d’image. Copie ce prompt et colle-le dans l’outil de génération d’image de ton choix.' }),
+      h('div', { class: 'card prompt-card' }, [
+        promptBox('Prompt', CharacterPrompt.imagePrompt(c), 'btn-copy-prompt'),
+        promptBox('Prompt négatif (si l’outil le propose)', CharacterPrompt.negative, 'btn-copy-negative')
+      ])
+    ]));
+
+    sections.push(h('div', { class: 'actions-row' }, [
+      h('button', { type: 'button', class: 'btn btn-ghost', onclick: function () {
+        copyText(CharacterPrompt.sheetText(c, episodes.map(function (e) { return e.title; })));
+      } }, [icon('copy'), h('span', { text: 'Copier la fiche' })]),
+      h('a', { class: 'btn btn-primary', href: '#/personnage/' + encodeURIComponent(c.id) + '/modifier', id: 'btn-edit-character' },
+        [icon('pencil'), h('span', { text: 'Modifier' })])
+    ]));
+
+    sections.push(h('button', { type: 'button', class: 'btn btn-danger btn-block', onclick: function () {
+      var msg = 'Supprimer « ' + c.name + ' » de la bibliothèque ?' +
+        (episodes.length ? ' Les ' + episodesLabel(episodes.length) + ' où il joue resteront intacts.' : '');
+      if (!window.confirm(msg)) return;
+      Store.deleteCharacter(c.id);
+      gen.cast = gen.cast.filter(function (x) { return x !== c.id; });
+      toast('Personnage supprimé');
+      location.hash = '#/personnages';
+    } }, [icon('trash'), h('span', { text: 'Supprimer le personnage' })]));
+
+    return [pageHeader(c.name, '#/personnages')].concat(sections);
+  }
+
+  function viewCharacterForm(id) {
+    if (id === null) {
+      if (!charForm.data || charForm.data.id) { charForm.data = blankCharacter(); charForm.dirty = false; }
+    } else if (!charForm.data || charForm.data.id !== id) {
+      var loaded = Store.getCharacter(id);
+      if (!loaded) return [pageHeader('Personnage', '#/personnages'), emptyState('user', 'Personnage introuvable', 'Il a peut-être été supprimé.')];
+      charForm.data = loaded;
+      charForm.dirty = false;
+    }
+    charForm.hash = location.hash;
+    var c = charForm.data;
+
+    var promptEl = h('p', { class: 'prompt-text', id: 'prompt-preview' });
+    function refresh() {
+      promptEl.textContent = c.name.trim() && c.species.trim()
+        ? CharacterPrompt.imagePrompt(c)
+        : 'Indique au moins le nom et l’espèce pour voir le prompt.';
+    }
+    function changed() { charForm.dirty = true; refresh(); }
+    refresh();
+
+    var name = h('input', { class: 'input input-title', type: 'text', maxlength: '40', id: 'char-name', autocomplete: 'off', placeholder: 'Ex. : Maître Ferdinand', 'aria-label': 'Nom' });
+    name.value = c.name;
+    name.addEventListener('input', function () { c.name = name.value; changed(); });
+
+    var species = h('input', { class: 'input', type: 'text', maxlength: '40', id: 'char-species', list: 'species-list', autocomplete: 'off', placeholder: 'Ex. : Renard, Hibou, Requin…', 'aria-label': 'Espèce' });
+    species.value = c.species;
+    species.addEventListener('input', function () { c.species = species.value; changed(); });
+    var datalist = h('datalist', { id: 'species-list' }, CharacterPrompt.SPECIES.map(function (sp) { return h('option', { value: sp }); }));
+
+    var segs = [['m', 'Il'], ['f', 'Elle']].map(function (g) {
+      var b = h('button', { type: 'button', class: 'chip' + (c.gender === g[0] ? ' is-active' : ''), 'aria-pressed': c.gender === g[0] ? 'true' : 'false', 'data-gender': g[0] }, [g[1]]);
+      b.addEventListener('click', function () {
+        c.gender = g[0];
+        segs.forEach(function (x) {
+          var on = x.getAttribute('data-gender') === g[0];
+          x.classList.toggle('is-active', on); x.setAttribute('aria-pressed', on ? 'true' : 'false');
+        });
+        changed();
+      });
+      return b;
+    });
+
+    var fields = CHAR_FIELDS.map(function (f) {
+      var t = textarea(c[f.key], f.label, function (v) { c[f.key] = v; changed(); });
+      t.setAttribute('placeholder', f.placeholder);
+      t.setAttribute('maxlength', '1500');
+      t.id = 'char-' + f.key;
+      return h('label', { class: 'field' }, [
+        h('span', { class: 'field-label', text: f.label }),
+        h('span', { class: 'hint', text: f.hint }),
+        t
+      ]);
+    });
+
+    var isNew = !c.id;
+    var bar = h('div', { class: 'editor-bar' }, [
+      h('a', { class: 'btn btn-ghost', href: isNew ? '#/personnages' : '#/personnage/' + encodeURIComponent(c.id) }, ['Annuler']),
+      h('button', { type: 'button', class: 'btn btn-primary', id: 'btn-save-character', onclick: function () {
+        if (!c.name.trim()) { toast('Donne un nom à ton personnage'); name.focus(); return; }
+        if (!c.species.trim()) { toast('Indique son espèce'); species.focus(); return; }
+        var res = Store.saveCharacter(c);
+        charForm.dirty = false;
+        charForm.data = null;
+        toast(res.saved ? 'Personnage enregistré' : 'Enregistrement impossible : stockage bloqué');
+        location.replace('#/personnage/' + encodeURIComponent(res.character.id));
+      } }, [icon('save'), h('span', { text: 'Enregistrer' })])
+    ]);
+
+    return [
+      pageHeader(isNew ? 'Nouveau personnage' : 'Modifier', isNew ? '#/personnages' : '#/personnage/' + encodeURIComponent(c.id)),
+      storageWarning(),
+      h('section', { class: 'section' }, [
+        h('label', { class: 'field' }, [h('span', { class: 'field-label', text: 'Nom *' }), name]),
+        h('div', { class: 'field' }, [h('span', { class: 'field-label', text: 'Pronom (accorde les histoires)' }),
+          h('div', { class: 'chips', role: 'group', 'aria-label': 'Pronom' }, segs)]),
+        h('label', { class: 'field' }, [h('span', { class: 'field-label', text: 'Espèce *' }), species, datalist])
+      ]),
+      h('section', { class: 'section' }, fields),
+      h('section', { class: 'section' }, [
+        sectionHeader('Aperçu du prompt image'),
+        h('div', { class: 'card prompt-card' }, [promptEl])
+      ]),
+      bar
+    ];
+  }
+
+  function viewCharacterRoute(param) {
+    if (param === 'nouveau') return viewCharacterForm(null);
+    var m = /^(.+)\/modifier$/.exec(param);
+    if (m) return viewCharacterForm(m[1]);
+    return viewCharacterSheet(param);
+  }
+
   var ROUTES = {
     accueil: viewHome,
     projets: viewProjects,
-    personnages: function () {
-      return viewSoon('Personnages', 'user',
-        'La bibliothèque rassemblera tous les personnages de tes vidéos.',
-        ['Créer une fiche personnage', 'Nom, description et style', 'Réutiliser un personnage dans plusieurs vidéos']);
-    },
+    personnages: viewCharacters,
+    personnage: viewCharacterRoute,
     histoires: viewStories,
     histoire: viewStoryEditor
   };
@@ -605,7 +858,7 @@
     var view = h('div', { class: 'view' }, nodes);
     app.replaceChildren(view);
 
-    var tabName = route.name === 'histoire' ? 'histoires' : route.name;
+    var tabName = route.name === 'histoire' ? 'histoires' : route.name === 'personnage' ? 'personnages' : route.name;
     document.querySelectorAll('.tab[data-route]').forEach(function (t) {
       var active = t.getAttribute('data-route') === tabName;
       t.classList.toggle('is-active', active);
@@ -662,23 +915,26 @@
   var restoringHash = false;
   window.addEventListener('hashchange', function () {
     if (restoringHash) { restoringHash = false; return; }
-    var leavingEditor = editor.dirty && location.hash !== editor.hash;
-    if (leavingEditor) {
+    var guard = editor.dirty && location.hash !== editor.hash ? editor
+      : charForm.dirty && location.hash !== charForm.hash ? charForm : null;
+    if (guard) {
       if (!window.confirm('Tu as des modifications non enregistrées. Quitter quand même ?')) {
         restoringHash = true;
-        location.hash = editor.hash;
+        location.hash = guard.hash;
         return;
       }
-      editor.dirty = false;
+      guard.dirty = false;
       if (editor.story && !editor.story.id) editor.story = null;
+      charForm.data = null;
     }
     if (currentRoute() !== 'histoire') editor.story = null;
+    if (currentRoute() !== 'personnage') charForm.data = null;
     render();
     window.scrollTo(0, 0);
   });
 
   window.addEventListener('beforeunload', function (e) {
-    if (editor.dirty) { e.preventDefault(); e.returnValue = ''; }
+    if (editor.dirty || charForm.dirty) { e.preventDefault(); e.returnValue = ''; }
   });
 
   window.addEventListener('storage', render); // synchronise si un autre onglet modifie les données

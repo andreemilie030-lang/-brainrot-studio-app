@@ -35,19 +35,41 @@
     });
   }
 
-  function castCharacters(tpl) {
+  /**
+   * Place les personnages de la bibliothèque dans les rôles libres d'une trame
+   * (rôles sans nom imposé, et de même genre si la trame impose un genre).
+   * Renvoie { clé du rôle: personnage }.
+   */
+  function placeLibrary(tpl, picked) {
+    var placed = {};
+    (picked || []).forEach(function (p) {
+      for (var i = 0; i < tpl.characters.length; i++) {
+        var ch = tpl.characters[i];
+        if (ch.name || placed[ch.key]) continue;
+        if (ch.gender && ch.gender !== p.gender) continue;
+        placed[ch.key] = p;
+        return;
+      }
+    });
+    return placed;
+  }
+
+  function castCharacters(tpl, picked) {
+    var placed = placeLibrary(tpl, picked);
     var used = {};
     var cast = {};
+    Object.keys(placed).forEach(function (k) { used[placed[k].name] = true; });
     tpl.characters.forEach(function (ch) {
-      var gender = ch.gender || (Math.random() < 0.5 ? 'f' : 'm');
-      var name = ch.name;
+      var lib = placed[ch.key];
+      var gender = lib ? lib.gender : ch.gender || (Math.random() < 0.5 ? 'f' : 'm');
+      var name = lib ? lib.name : ch.name;
       if (!name) {
         var pool = D.NAMES[gender].filter(function (n) { return !used[n]; });
         name = pick(pool);
       }
       used[name] = true;
       var role = Array.isArray(ch.role) ? (gender === 'f' ? ch.role[1] : ch.role[0]) : ch.role;
-      cast[ch.key] = { key: ch.key, name: name, gender: gender, role: role };
+      cast[ch.key] = { key: ch.key, name: name, gender: gender, role: role, libraryId: lib ? lib.id : undefined };
     });
     return cast;
   }
@@ -56,13 +78,19 @@
    * Génère une histoire.
    * @param {string|null} genreId  genre voulu, ou null pour « au hasard »
    * @param {string[]} avoid       identifiants de trames à éviter (déjà vues récemment)
+   * @param {object[]} picked      personnages de la bibliothèque à faire jouer ({ id, name, gender })
    */
-  function generate(genreId, avoid) {
+  function generate(genreId, avoid, picked) {
     avoid = avoid || [];
+    picked = picked || [];
     var pool = D.TEMPLATES.filter(function (t) { return !genreId || t.genre === genreId; });
+    // Garde les trames qui accueillent le plus de personnages choisis.
+    var fit = function (t) { return Object.keys(placeLibrary(t, picked)).length; };
+    var best = Math.max.apply(null, pool.map(fit));
+    pool = pool.filter(function (t) { return fit(t) === best; });
     var fresh = pool.filter(function (t) { return avoid.indexOf(t.id) === -1; });
     var tpl = pick(fresh.length ? fresh : pool);
-    var cast = castCharacters(tpl);
+    var cast = castCharacters(tpl, picked);
 
     return {
       templateId: tpl.id,
@@ -70,7 +98,9 @@
       title: pick(tpl.titles),
       characters: tpl.characters.map(function (ch) {
         var c = cast[ch.key];
-        return { key: c.key, name: c.name, role: c.role };
+        var out = { key: c.key, name: c.name, role: c.role };
+        if (c.libraryId) out.libraryId = c.libraryId;
+        return out;
       }),
       hook: fill(tpl.hook, cast),
       scenes: tpl.scenes.map(function (s) {
@@ -137,6 +167,9 @@
     genreLabel: genreLabel,
     nameOf: nameOf,
     toText: toText,
+    placedCount: function (story) {
+      return story.characters.filter(function (c) { return c.libraryId; }).length;
+    },
     templateCount: function (genreId) {
       return D.TEMPLATES.filter(function (t) { return !genreId || t.genre === genreId; }).length;
     }

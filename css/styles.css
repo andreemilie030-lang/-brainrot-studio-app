@@ -420,6 +420,44 @@ select.input {
   -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
 }
 
+/* ---------- Studio de personnages ---------- */
+
+.avatar {
+  display: grid; place-items: center; flex: none; width: 52px; height: 52px; border-radius: 50%;
+  font-size: 22px; font-weight: 850; color: #fff;
+  background: radial-gradient(circle at 30% 25%, var(--red-hot), var(--red-deep) 75%);
+  box-shadow: 0 8px 22px -10px var(--red-glow), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+.avatar-xl { width: 84px; height: 84px; font-size: 38px; }
+
+.char-hero { display: flex; align-items: center; gap: 16px; padding: 18px; animation: rise 0.45s var(--ease) both; }
+.char-hero-body { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
+.char-name { font-size: 26px; font-weight: 850; letter-spacing: -0.03em; line-height: 1.1; overflow-wrap: anywhere; }
+.char-sub { font-size: 15px; color: var(--text-2); }
+
+.sheet-block { padding: 14px 16px; }
+.pre { white-space: pre-line; overflow-wrap: anywhere; }
+.muted { font-size: 15px; color: var(--text-3); font-style: italic; }
+
+.prompt-card { padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+.prompt { display: flex; flex-direction: column; gap: 8px; }
+.prompt + .prompt { padding-top: 14px; border-top: 1px solid var(--line); }
+.prompt-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.prompt-head .story-label { margin: 0; }
+.prompt-text {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13.5px; line-height: 1.55;
+  color: var(--text-2); padding: 12px; border-radius: 12px; background: var(--bg-2); border: 1px solid var(--line);
+  overflow-wrap: anywhere; -webkit-user-select: text; user-select: text;
+}
+
+.cast-lib {
+  margin-left: 6px; padding: 1px 6px; border-radius: 6px; vertical-align: 2px;
+  font-size: 10px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase;
+  background: rgba(229, 25, 58, 0.16); color: var(--red-hot);
+}
+.chip-cast.is-active::before { content: "✓ "; }
+.cast-empty { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+
 /* ---------- Accessibilité : mouvements réduits ---------- */
 
 @media (prefers-reduced-motion: reduce) {
